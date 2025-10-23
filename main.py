@@ -9,7 +9,7 @@ def main():
     if ui_mode == "curses":
         # Add src directory to path
         sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
-        from ui.curses_mode import run_curses_ui
+        from user_interfaces import run_curses_ui
         run_curses_ui()
     else:
         # Standard UI - placeholder for now
@@ -22,7 +22,7 @@ def main():
             response = input("Would you like to run the curses interface instead? (y/N): ")
             if response.lower().startswith('y'):
                 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
-                from ui.curses_mode import run_curses_ui
+                from user_interfaces import run_curses_ui
                 run_curses_ui()
         except KeyboardInterrupt:
             print("\nExiting...")

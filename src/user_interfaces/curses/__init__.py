@@ -1,0 +1,1 @@
+# This file makes the curses directory a Python package

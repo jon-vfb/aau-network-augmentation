@@ -426,3 +426,148 @@ class pcapparser:
                     matching_indices.append(i)
         
         return matching_indices
+    
+    def get_netflows(self) -> List[dict]:
+        """
+        Identify and return unique network flows from the packets.
+        A netflow is defined by: src_ip, dst_ip, src_port, dst_port, protocol
+        
+        Returns:
+            List[dict]: List of unique netflows with their characteristics and packet count
+        """
+        if not self._loaded:
+            self.load()
+        
+        flows = {}
+        
+        for i, pkt in enumerate(self.packets):
+            if pkt.haslayer(IP):
+                ip_layer = pkt[IP]
+                flow_key = None
+                protocol = None
+                src_port = dst_port = None
+                
+                # Extract protocol and ports
+                if pkt.haslayer(TCP):
+                    protocol = 'TCP'
+                    src_port = pkt[TCP].sport
+                    dst_port = pkt[TCP].dport
+                elif pkt.haslayer(UDP):
+                    protocol = 'UDP'
+                    src_port = pkt[UDP].sport
+                    dst_port = pkt[UDP].dport
+                elif pkt.haslayer(ICMP):
+                    protocol = 'ICMP'
+                    src_port = dst_port = 0  # ICMP doesn't have ports
+                else:
+                    protocol = str(ip_layer.proto)
+                    src_port = dst_port = 0
+                
+                # Create flow key (bidirectional - normalize by sorting)
+                addr_pair = sorted([(ip_layer.src, src_port), (ip_layer.dst, dst_port)])
+                flow_key = (addr_pair[0][0], addr_pair[0][1], addr_pair[1][0], addr_pair[1][1], protocol)
+                
+                if flow_key not in flows:
+                    flows[flow_key] = {
+                        'src_ip': addr_pair[0][0],
+                        'src_port': addr_pair[0][1],
+                        'dst_ip': addr_pair[1][0],
+                        'dst_port': addr_pair[1][1],
+                        'protocol': protocol,
+                        'packet_count': 0,
+                        'packet_indices': [],
+                        'first_seen': i,
+                        'last_seen': i,
+                        'bytes_total': 0
+                    }
+                
+                # Update flow statistics
+                flows[flow_key]['packet_count'] += 1
+                flows[flow_key]['packet_indices'].append(i)
+                flows[flow_key]['last_seen'] = i
+                flows[flow_key]['bytes_total'] += len(pkt)
+        
+        return list(flows.values())
+    
+    def get_packets_by_netflow(self, netflow: dict) -> List:
+        """
+        Get all packets belonging to a specific netflow.
+        
+        Args:
+            netflow (dict): Netflow dictionary (from get_netflows())
+            
+        Returns:
+            List: Packets belonging to the specified netflow
+        """
+        if not self._loaded:
+            self.load()
+        
+        if 'packet_indices' not in netflow:
+            return []
+        
+        packets = []
+        for index in netflow['packet_indices']:
+            if 0 <= index < len(self.packets):
+                packets.append(self.packets[index])
+        
+        return packets
+    
+    def filter_netflows(self, min_packets: int = 1, protocol: Optional[str] = None, 
+                       src_ip: Optional[str] = None, dst_ip: Optional[str] = None) -> List[dict]:
+        """
+        Filter netflows based on various criteria.
+        
+        Args:
+            min_packets (int): Minimum number of packets in flow
+            protocol (Optional[str]): Filter by protocol (TCP, UDP, ICMP, etc.)
+            src_ip (Optional[str]): Filter by source IP
+            dst_ip (Optional[str]): Filter by destination IP
+            
+        Returns:
+            List[dict]: Filtered netflows
+        """
+        flows = self.get_netflows()
+        filtered = []
+        
+        for flow in flows:
+            # Apply filters
+            if flow['packet_count'] < min_packets:
+                continue
+            if protocol and flow['protocol'].upper() != protocol.upper():
+                continue
+            if src_ip and flow['src_ip'] != src_ip and flow['dst_ip'] != src_ip:
+                continue
+            if dst_ip and flow['src_ip'] != dst_ip and flow['dst_ip'] != dst_ip:
+                continue
+            
+            filtered.append(flow)
+        
+        return filtered
+    
+    def print_netflows(self, flows: Optional[List[dict]] = None, limit: int = 20):
+        """
+        Print a formatted list of netflows.
+        
+        Args:
+            flows (Optional[List[dict]]): Flows to print (defaults to all flows)
+            limit (int): Maximum number of flows to display
+        """
+        if flows is None:
+            flows = self.get_netflows()
+        
+        # Sort by packet count (descending)
+        flows = sorted(flows, key=lambda x: x['packet_count'], reverse=True)
+        
+        print(f"\n{'='*100}")
+        print(f"Network Flows Summary ({len(flows)} total flows)")
+        print(f"{'='*100}")
+        print(f"{'#':<3} {'Src IP':<15} {'Src Port':<8} {'Dst IP':<15} {'Dst Port':<8} {'Protocol':<8} {'Packets':<8} {'Bytes':<10}")
+        print(f"{'-'*100}")
+        
+        for i, flow in enumerate(flows[:limit]):
+            print(f"{i+1:<3} {flow['src_ip']:<15} {flow['src_port']:<8} {flow['dst_ip']:<15} "
+                  f"{flow['dst_port']:<8} {flow['protocol']:<8} {flow['packet_count']:<8} {flow['bytes_total']:<10}")
+        
+        if len(flows) > limit:
+            print(f"\n... and {len(flows) - limit} more flows")
+        print(f"{'='*100}\n")
