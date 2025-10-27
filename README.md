@@ -42,7 +42,6 @@ git checkout -b feature/your-branch-name
 ### 3. Work on Your Code
 
 Make your changes, add your commits, and keep them clear and meaningful.
-Each commit should describe *what* you did, not *how* you did it.
 
 ```bash
 # Stage your changes
@@ -89,7 +88,7 @@ git push origin feature/your-branch-name
 
 ### 6. Open a Pull Request
 
-Go to GitHub (or your Git platform), open a **Pull Request** from your feature branch into `QA`,
+Go to GitHub, open a **Pull Request** from your feature branch into `QA`,
 
 After review and approval, your code will be merged into `QA`.
 Later, once `QA` passes all tests, it will be merged into `main`.
