@@ -72,6 +72,10 @@ git checkout feature/your-branch-name
 git merge QA
 ```
 
+```
+It also works if from your working branch you execute: git pull origin QA
+```
+
 If there are conflicts, resolve them locally and commit the fixes.
 
 ---
