@@ -119,12 +119,51 @@ class CursesLogic:
         
         for i, packet in enumerate(packets):
             try:
+                from scapy.all import IP, TCP, UDP, ICMP, ARP
+                
                 # Extract flow key (src_ip, dst_ip, src_port, dst_port, protocol)
-                src_ip = getattr(packet, 'src', 'Unknown')
-                dst_ip = getattr(packet, 'dst', 'Unknown')
-                src_port = getattr(packet, 'sport', 0)
-                dst_port = getattr(packet, 'dport', 0)
-                protocol = getattr(packet, 'proto', 'Unknown')
+                src_ip = 'Unknown'
+                dst_ip = 'Unknown'
+                src_port = 0
+                dst_port = 0
+                protocol = 'Unknown'
+                
+                # Extract IP layer information
+                if packet.haslayer(IP):
+                    ip_layer = packet[IP]
+                    src_ip = str(ip_layer.src)
+                    dst_ip = str(ip_layer.dst)
+                    
+                    if packet.haslayer(TCP):
+                        tcp_layer = packet[TCP]
+                        src_port = tcp_layer.sport
+                        dst_port = tcp_layer.dport
+                        protocol = 'TCP'
+                    elif packet.haslayer(UDP):
+                        udp_layer = packet[UDP]
+                        src_port = udp_layer.sport
+                        dst_port = udp_layer.dport
+                        protocol = 'UDP'
+                    elif packet.haslayer(ICMP):
+                        protocol = 'ICMP'
+                        src_port = dst_port = 0
+                    else:
+                        protocol = str(ip_layer.proto)
+                        src_port = dst_port = 0
+                        
+                elif packet.haslayer(ARP):
+                    arp_layer = packet[ARP]
+                    src_ip = str(arp_layer.psrc)
+                    dst_ip = str(arp_layer.pdst)
+                    protocol = 'ARP'
+                    src_port = dst_port = 0
+                else:
+                    # Fallback to getattr for older packets or unknown format
+                    src_ip = str(getattr(packet, 'src', 'Unknown'))
+                    dst_ip = str(getattr(packet, 'dst', 'Unknown'))
+                    src_port = getattr(packet, 'sport', 0)
+                    dst_port = getattr(packet, 'dport', 0)
+                    protocol = str(getattr(packet, 'proto', 'Unknown'))
                 
                 # Create bidirectional flow key
                 flow_key = tuple(sorted([(src_ip, src_port), (dst_ip, dst_port)]) + [protocol])
@@ -147,7 +186,7 @@ class CursesLogic:
                 flow['packet_count'] += 1
                 flow['packet_indices'].append(i)
                 flow['last_seen'] = getattr(packet, 'time', flow['last_seen'])
-                flow['bytes_transferred'] += len(getattr(packet, 'load', b''))
+                flow['bytes_transferred'] += len(packet)
                 
             except Exception as e:
                 continue
