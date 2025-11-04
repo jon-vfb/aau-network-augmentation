@@ -1,3 +1,4 @@
+import random
 from scapy.all import IP, TCP, wrpcap, RandShort
 from typing import List, Set
 import os
@@ -12,8 +13,9 @@ def generate_port_scan(target_ip: str, ports_to_scan: List[int], attacker_ip: st
         syn_packet = IP(src=attacker_ip, dst=target_ip) / TCP(sport=random_source_port, dport=port, flags="S")
         
         attack_packets.append(syn_packet)
-        
-        response_time= syn_packet.time + 0.001  # Simulated response time
+
+        simulated_rtt = random.uniform(0.0001, 0.0005) # Simulated round-trip time between 0.1ms and 0.5ms
+        response_time = syn_packet.time + simulated_rtt 
 
         if port in open_ports:
             
@@ -38,6 +40,18 @@ def generate_port_scan(target_ip: str, ports_to_scan: List[int], attacker_ip: st
             
             rst_packet.time = response_time + 0.00005 
             attack_packets.append(rst_packet)
+
+        else:
+            # Closed port response
+            rst_ack_packet = IP(src=target_ip, dst=attacker_ip) / TCP(
+                sport=port,
+                dport=random_source_port,
+                flags="RA", # Flag Reset-Ack
+                ack=syn_packet.seq + 1,
+                seq=0 # No sequence number for RST-ACK
+            )
+            rst_ack_packet.time = response_time
+            attack_packets.append(rst_ack_packet)
 
     return attack_packets
 
