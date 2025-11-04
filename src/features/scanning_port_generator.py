@@ -27,6 +27,18 @@ def generate_port_scan(target_ip: str, ports_to_scan: List[int], attacker_ip: st
             syn_ack_packet.time = response_time
             attack_packets.append(syn_ack_packet)
 
+            #RST packet in order to be stealthy (not completing the handshake)
+            rst_packet = IP(src=attacker_ip, dst=target_ip) / TCP(
+                sport=random_source_port,
+                dport=port,
+                flags="R", # Flag Reset
+                ack=syn_ack_packet.seq + 1,
+                seq=syn_packet.seq + 1
+            )
+            
+            rst_packet.time = response_time + 0.00005 
+            attack_packets.append(rst_packet)
+
     return attack_packets
 
 def save_packets_to_pcap(packets: List, filename: str):
