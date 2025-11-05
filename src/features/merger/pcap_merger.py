@@ -106,25 +106,36 @@ class PcapMerger:
             return False
             
         try:
-            # Extract netflows and timing information (IP packets only)
-            left_flows = self._extract_netflows_with_timing(self.left_parser)
-            right_flows = self._extract_netflows_with_timing(self.right_parser)
-            
             # Get all packets including non-IP packets
             left_packets = self.left_parser.get_packets()
             right_packets = self.right_parser.get_packets()
             
-            # Calculate base timestamp from all packets
-            left_base = min(float(pkt.time) for pkt in left_packets)
-            right_base = min(float(pkt.time) for pkt in right_packets)
+            if not left_packets or not right_packets:
+                print("Error: No packets found in one or both PCAP files")
+                return False
+            
+            # Calculate time ranges for both captures
+            left_timestamps = [float(pkt.time) for pkt in left_packets]
+            right_timestamps = [float(pkt.time) for pkt in right_packets]
+            
+            left_start = min(left_timestamps)
+            left_end = max(left_timestamps)
+            left_duration = left_end - left_start
+            
+            right_start = min(right_timestamps)
+            right_end = max(right_timestamps)
+            right_duration = right_end - right_start
             
             merged_packets = []
             
-            # Process left (benign) packets - include ALL packets
+            # Add all left (benign) packets with their original timestamps - keep intact
+            print(f"Adding {len(left_packets)} benign packets with original timestamps")
             for pkt in left_packets:
                 merged_packets.append((float(pkt.time), pkt))
-                    
-            # Process right (malicious) packets with IP translation
+            
+            # Process right (malicious) packets - map them into the benign timeline
+            print(f"Mapping {len(right_packets)} malicious packets into benign timeline")
+            
             for pkt in right_packets:
                 # Create a copy of the packet for modification
                 new_pkt = pkt.copy()
@@ -150,18 +161,46 @@ class PcapMerger:
                             del new_pkt[UDP].chksum
                     else:
                         print(f"Warning: Could not allocate new IPs for {original_src}->{original_dst}, keeping original IPs")
-                        
-                # Calculate relative timestamp with jitter
-                relative_ts = float(pkt.time) - right_base
-                new_ts = left_base + self._apply_jitter(relative_ts)
-                merged_packets.append((new_ts, new_pkt))
-                    
-            # Sort packets by timestamp
+                
+                # Map the malicious packet timestamp into the benign timeline
+                # Calculate the relative position of this packet in the original malicious capture
+                if right_duration > 0:
+                    relative_position = (float(pkt.time) - right_start) / right_duration
+                else:
+                    relative_position = 0.5  # If single packet, place it in the middle
+                
+                # Map this position into the benign timeline (constrain to benign bounds)
+                new_timestamp = left_start + (relative_position * left_duration)
+                
+                # Apply jitter if enabled (only to malicious packets)
+                if self.jitter_max > 0:
+                    jitter_range = min(self.jitter_max, left_duration * 0.01)  # Max 1% of total duration
+                    jitter = random.uniform(-jitter_range, jitter_range)
+                    new_timestamp += jitter
+                
+                # Ensure timestamp stays strictly within benign timeline bounds
+                new_timestamp = max(left_start, min(left_end, new_timestamp))
+                
+                # Update the packet's timestamp
+                new_pkt.time = new_timestamp
+                merged_packets.append((new_timestamp, new_pkt))
+            
+            # Sort all packets by timestamp to ensure proper chronological order
             merged_packets.sort(key=lambda x: x[0])
             
-            # Write merged PCAP
-            wrpcap(output_path, [pkt for _, pkt in merged_packets])
-            print(f"Successfully merged {len(merged_packets)} packets")
+            # Resolve timestamp overlaps to ensure realistic timing
+            print("Resolving timestamp overlaps...")
+            resolved_packets = self._resolve_timestamp_overlaps(merged_packets)
+            
+            # Write merged PCAP with packets in chronological order
+            # Update packet timestamps to ensure they're properly set
+            final_packets = []
+            for timestamp, pkt in resolved_packets:
+                pkt.time = timestamp
+                final_packets.append(pkt)
+            
+            wrpcap(output_path, final_packets)
+            print(f"Successfully merged {len(final_packets)} packets in chronological order")
             return True
             
         except Exception as e:
@@ -227,6 +266,50 @@ class PcapMerger:
         jitter_range = min(abs(delta * 0.1), self.jitter_max)
         jitter = random.uniform(-jitter_range, jitter_range)
         return max(0, delta + jitter)  # Ensure positive delta
+        
+    def _resolve_timestamp_overlaps(self, packets_with_timestamps: List[Tuple[float, any]]) -> List[Tuple[float, any]]:
+        """
+        Resolve timestamp overlaps by adding microsecond-level offsets to ensure unique timestamps.
+        This handles both duplicates in original files and those created during merging.
+        
+        Args:
+            packets_with_timestamps: List of (timestamp, packet) tuples (should be pre-sorted)
+            
+        Returns:
+            List of (timestamp, packet) tuples with unique timestamps
+        """
+        if not packets_with_timestamps:
+            return packets_with_timestamps
+            
+        resolved_packets = []
+        overlap_count = 0
+        
+        # Minimum increment in seconds (10 microseconds for better separation)
+        min_increment = 0.00001
+        
+        # Process packets sequentially, ensuring each timestamp is unique and strictly increasing
+        for i, (timestamp, packet) in enumerate(packets_with_timestamps):
+            if i == 0:
+                # First packet keeps its timestamp
+                resolved_packets.append((timestamp, packet))
+            else:
+                prev_timestamp = resolved_packets[-1][0]
+                
+                # Ensure this timestamp is strictly greater than the previous one
+                # If there's any collision or if timestamps are too close, move it forward
+                if timestamp <= prev_timestamp:
+                    # Move to just after the previous timestamp
+                    adjusted_timestamp = prev_timestamp + min_increment
+                    overlap_count += 1
+                else:
+                    adjusted_timestamp = timestamp
+                
+                resolved_packets.append((adjusted_timestamp, packet))
+        
+        if overlap_count > 0:
+            print(f"Resolved {overlap_count} timestamp overlaps with microsecond offsets")
+            
+        return resolved_packets
         
     def _extract_netflows_with_timing(self, parser: pcapparser) -> Dict[str, Dict]:
         """
@@ -346,7 +429,10 @@ class PcapMerger:
         print(f"  Netflows: {stats['right_netflows']}")
         
         print(f"Merge Settings:")
-        print(f"  Jitter: ±{stats['jitter_max']} seconds")
+        if stats['jitter_max'] > 0:
+            print(f"  Jitter: ±{stats['jitter_max']} seconds (applied to malicious traffic only)")
+        else:
+            print(f"  Jitter: Disabled")
         if self.ip_translation_range:
             print(f"  IP Translation Range: {self.ip_translation_range}")
         print(f"Expected Output:")
