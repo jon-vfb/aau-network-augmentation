@@ -1,5 +1,10 @@
 from scapy.all import *
 from scapy.utils import rdpcap, wrpcap
+# Explicit imports to ensure layer classes are available
+from scapy.layers.inet import IP, TCP, UDP, ICMP
+from scapy.layers.l2 import ARP
+from scapy.layers.dns import DNS
+from scapy.packet import Raw
 import os
 import random
 import time
@@ -7,6 +12,13 @@ from typing import List, Dict, Optional, Tuple
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from classes.pcapparser import pcapparser
+
+# Import the centralized protocol-ports configuration
+from configs.protocol_ports import (
+    get_ports_for_protocol, get_protocols_for_port, get_primary_port,
+    uses_tcp, uses_udp, get_protocol_transport, get_protocol_info,
+    is_well_known_port, get_port_category, validate_port
+)
 
 
 class PcapMerger:
@@ -75,13 +87,13 @@ class PcapMerger:
     
     def _extract_netflows_with_timing(self, parser: pcapparser) -> Dict[str, Dict]:
         """
-        Extract netflows with detailed timing information.
+        Extract netflows with detailed timing information using enhanced protocol detection.
         
         Args:
             parser (pcapparser): Parser containing loaded packets
             
         Returns:
-            Dict[str, Dict]: Dictionary of netflows with timing data
+            Dict[str, Dict]: Dictionary of netflows with timing data and protocol information
         """
         packets = parser.get_packets()
         flows = {}
@@ -94,8 +106,9 @@ class PcapMerger:
             flow_key = None
             protocol = None
             src_port = dst_port = 0
+            application_protocol = None
             
-            # Extract protocol and ports
+            # Extract transport protocol and ports
             if pkt.haslayer(TCP):
                 protocol = 'TCP'
                 src_port = pkt[TCP].sport
@@ -111,24 +124,140 @@ class PcapMerger:
                 protocol = str(ip_layer.proto)
                 src_port = dst_port = 0
             
+            # Detect application protocol using configuration
+            if src_port != 0 and dst_port != 0:
+                application_protocol = self._detect_application_protocol(src_port, dst_port, protocol, pkt)
+            
             # Create unidirectional flow key to preserve separate flows
-            flow_key = f"{ip_layer.src}:{src_port}->{ip_layer.dst}:{dst_port}-{protocol}"
+            flow_identifier = application_protocol if application_protocol else protocol
+            flow_key = f"{ip_layer.src}:{src_port}->{ip_layer.dst}:{dst_port}-{flow_identifier}"
             
             if flow_key not in flows:
                 flows[flow_key] = {
                     'packets': [],
                     'timestamps': [],
-                    'protocol': protocol,
+                    'transport_protocol': protocol,
+                    'application_protocol': application_protocol,
                     'src_ip': ip_layer.src,
                     'src_port': src_port,
                     'dst_ip': ip_layer.dst,
-                    'dst_port': dst_port
+                    'dst_port': dst_port,
+                    'port_category': get_port_category(dst_port) if dst_port != 0 else 'n/a',
+                    'likely_service': self._classify_service_type(src_port, dst_port, application_protocol)
                 }
             
             flows[flow_key]['packets'].append(pkt)
             flows[flow_key]['timestamps'].append(float(pkt.time))
         
         return flows
+    
+    def _detect_application_protocol(self, src_port: int, dst_port: int, transport_protocol: str, pkt) -> Optional[str]:
+        """
+        Detect the application protocol using the configuration and packet analysis.
+        
+        Args:
+            src_port (int): Source port
+            dst_port (int): Destination port  
+            transport_protocol (str): Transport protocol (TCP/UDP)
+            pkt: Packet object
+            
+        Returns:
+            Optional[str]: Detected application protocol name
+        """
+        # Check destination port first (more reliable for server identification)
+        dst_protocols = get_protocols_for_port(dst_port)
+        if dst_protocols:
+            # Filter by transport protocol
+            for protocol in dst_protocols:
+                protocol_transports = get_protocol_transport(protocol)
+                if transport_protocol in protocol_transports:
+                    # Additional validation for specific protocols
+                    if self._validate_protocol_detection(protocol, pkt):
+                        return protocol
+            # Return first matching protocol if validation not available
+            return dst_protocols[0] if dst_protocols else None
+        
+        # Check source port (for client-side identification)
+        src_protocols = get_protocols_for_port(src_port)
+        if src_protocols:
+            for protocol in src_protocols:
+                protocol_transports = get_protocol_transport(protocol)
+                if transport_protocol in protocol_transports:
+                    if self._validate_protocol_detection(protocol, pkt):
+                        return protocol
+            return src_protocols[0] if src_protocols else None
+        
+        return None
+    
+    def _validate_protocol_detection(self, protocol: str, pkt) -> bool:
+        """
+        Validate protocol detection using payload analysis for certain protocols.
+        
+        Args:
+            protocol (str): Suspected protocol
+            pkt: Packet object
+            
+        Returns:
+            bool: True if validation passes or is not needed
+        """
+        # HTTP validation
+        if protocol in ['HTTP', 'HTTPS'] and pkt.haslayer(Raw):
+            try:
+                payload = str(pkt[Raw].load, 'utf-8', errors='ignore')
+                if any(method in payload for method in ['GET ', 'POST ', 'PUT ', 'DELETE ', 'HTTP/']):
+                    return True
+                # If no HTTP indicators found, it might not be HTTP
+                return False
+            except:
+                pass
+        
+        # DNS validation
+        if protocol == 'DNS' and pkt.haslayer(DNS):
+            return True
+        elif protocol == 'DNS' and not pkt.haslayer(DNS):
+            return False
+        
+        # For other protocols, assume detection is correct
+        return True
+    
+    def _classify_service_type(self, src_port: int, dst_port: int, application_protocol: Optional[str]) -> str:
+        """
+        Classify the type of service based on ports and detected protocol.
+        
+        Args:
+            src_port (int): Source port
+            dst_port (int): Destination port
+            application_protocol (Optional[str]): Detected application protocol
+            
+        Returns:
+            str: Service type classification
+        """
+        if application_protocol:
+            # Map protocols to service types
+            service_mappings = {
+                'web': ['HTTP', 'HTTPS', 'APACHE', 'NGINX'],
+                'database': ['MYSQL', 'POSTGRESQL', 'MSSQL', 'ORACLE', 'MONGODB', 'REDIS'],
+                'email': ['SMTP', 'POP3', 'IMAP'],
+                'file_transfer': ['FTP', 'FTPS', 'SFTP', 'TFTP'],
+                'remote_access': ['SSH', 'TELNET', 'RDP', 'VNC'],
+                'dns': ['DNS'],
+                'voip': ['SIP', 'RTP'],
+                'messaging': ['RABBITMQ', 'KAFKA', 'MQTT'],
+                'monitoring': ['SNMP', 'SYSLOG', 'GRAFANA', 'PROMETHEUS'],
+                'development': ['DJANGO', 'FLASK', 'NODE', 'RAILS']
+            }
+            
+            for service_type, protocols in service_mappings.items():
+                if application_protocol in protocols:
+                    return service_type
+        
+        # Fallback to port-based classification
+        if is_well_known_port(dst_port):
+            return 'well-known-service'
+        elif is_well_known_port(src_port):
+            return 'client-to-service'
+        else:
+            return 'unknown'
     
     def _calculate_flow_deltas(self, flow_data: Dict) -> List[float]:
         """
@@ -367,27 +496,88 @@ class PcapMerger:
         return stats
     
     def print_merge_info(self):
-        """Print detailed information about the merge process."""
+        """Print detailed information about the merge process with protocol analysis."""
         stats = self.get_merge_statistics()
         if not stats:
             print("No merge statistics available")
             return
         
-        print(f"\n{'='*60}")
-        print(f"PCAP Merge Information")
-        print(f"{'='*60}")
+        print(f"\n{'='*80}")
+        print(f"PCAP Merge Information with Protocol Analysis")
+        print(f"{'='*80}")
         print(f"Left PCAP:")
         print(f"  Packets: {stats['left_packets']}")
         print(f"  Netflows: {stats['left_netflows']}")
+        
+        if 'left_protocols' in stats:
+            print(f"  Detected Protocols: {', '.join(stats['left_protocols'])}")
+            print(f"  Service Types: {', '.join(stats['left_services'])}")
+        
         print(f"Right PCAP:")
         print(f"  Packets: {stats['right_packets']}")
         print(f"  Netflows: {stats['right_netflows']}")
+        
+        if 'right_protocols' in stats:
+            print(f"  Detected Protocols: {', '.join(stats['right_protocols'])}")
+            print(f"  Service Types: {', '.join(stats['right_services'])}")
+        
         print(f"Merge Settings:")
         print(f"  Jitter: ±{stats['jitter_max']} seconds")
         print(f"Expected Output:")
         print(f"  Total Packets: {stats['left_packets'] + stats['right_packets']}")
         print(f"  Total Netflows: {stats['total_expected_netflows']}")
-        print(f"{'='*60}\n")
+        
+        if 'combined_protocols' in stats:
+            print(f"  Combined Protocols: {', '.join(stats['combined_protocols'])}")
+            print(f"  Combined Service Types: {', '.join(stats['combined_services'])}")
+        
+        print(f"{'='*80}\n")
+    
+    def get_enhanced_merge_statistics(self) -> Dict:
+        """
+        Get enhanced statistics including protocol analysis.
+        
+        Returns:
+            Dict: Enhanced statistics dictionary
+        """
+        if not self.left_parser or not self.right_parser:
+            return {}
+        
+        left_flows = self._extract_netflows_with_timing(self.left_parser)
+        right_flows = self._extract_netflows_with_timing(self.right_parser)
+        
+        # Analyze protocols and services
+        left_protocols = set()
+        left_services = set()
+        right_protocols = set()
+        right_services = set()
+        
+        for flow_data in left_flows.values():
+            if flow_data.get('application_protocol'):
+                left_protocols.add(flow_data['application_protocol'])
+            left_services.add(flow_data.get('likely_service', 'unknown'))
+        
+        for flow_data in right_flows.values():
+            if flow_data.get('application_protocol'):
+                right_protocols.add(flow_data['application_protocol'])
+            right_services.add(flow_data.get('likely_service', 'unknown'))
+        
+        stats = {
+            'left_packets': len(self.left_parser.get_packets()),
+            'right_packets': len(self.right_parser.get_packets()),
+            'left_netflows': len(left_flows),
+            'right_netflows': len(right_flows),
+            'total_expected_netflows': len(left_flows) + len(right_flows),
+            'jitter_max': self.jitter_max,
+            'left_protocols': sorted(list(left_protocols)),
+            'right_protocols': sorted(list(right_protocols)),
+            'left_services': sorted(list(left_services)),
+            'right_services': sorted(list(right_services)),
+            'combined_protocols': sorted(list(left_protocols | right_protocols)),
+            'combined_services': sorted(list(left_services | right_services))
+        }
+        
+        return stats
 
 
 def main():
