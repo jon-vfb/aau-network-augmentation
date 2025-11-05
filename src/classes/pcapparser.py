@@ -2,8 +2,22 @@
 
 from scapy.all import *
 from scapy.utils import rdpcap, wrpcap
+# Explicit imports to ensure layer classes are available
+from scapy.layers.inet import IP, TCP, UDP, ICMP
+from scapy.layers.l2 import ARP
+from scapy.layers.dns import DNS
+from scapy.packet import Raw
 import os
+import sys
 from typing import List, Optional, Union, Callable
+
+# Import the centralized protocol-ports configuration
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from configs.protocol_ports import (
+    get_ports_for_protocol, get_protocols_for_port, get_primary_port,
+    uses_tcp, uses_udp, get_protocol_transport, get_protocol_info,
+    is_well_known_port, get_port_category, validate_port
+)
 
 
 class pcapparser:
@@ -100,10 +114,10 @@ class pcapparser:
     
     def filter_by_protocol(self, protocol: str) -> List:
         """
-        Filter packets by protocol.
+        Filter packets by protocol using centralized configuration.
         
         Args:
-            protocol (str): Protocol name (e.g., 'TCP', 'UDP', 'ICMP', 'HTTP')
+            protocol (str): Protocol name (e.g., 'TCP', 'UDP', 'ICMP', 'HTTP', 'SSH', 'MYSQL')
             
         Returns:
             List: Packets matching the protocol
@@ -114,21 +128,78 @@ class pcapparser:
         protocol = protocol.upper()
         filtered = []
         
-        for pkt in self.packets:
-            if protocol == 'TCP' and pkt.haslayer(TCP):
-                filtered.append(pkt)
-            elif protocol == 'UDP' and pkt.haslayer(UDP):
-                filtered.append(pkt)
-            elif protocol == 'ICMP' and pkt.haslayer(ICMP):
-                filtered.append(pkt)
-            elif protocol == 'HTTP' and pkt.haslayer(Raw) and pkt.haslayer(TCP):
-                # Simple HTTP detection
-                payload = str(pkt[Raw].load)
-                if 'HTTP' in payload or 'GET ' in payload or 'POST ' in payload:
+        # Handle transport layer protocols directly
+        if protocol in ['TCP', 'UDP', 'ICMP', 'ARP']:
+            for pkt in self.packets:
+                if protocol == 'TCP' and pkt.haslayer(TCP):
                     filtered.append(pkt)
+                elif protocol == 'UDP' and pkt.haslayer(UDP):
+                    filtered.append(pkt)
+                elif protocol == 'ICMP' and pkt.haslayer(ICMP):
+                    filtered.append(pkt)
+                elif protocol == 'ARP' and pkt.haslayer(ARP):
+                    filtered.append(pkt)
+        else:
+            # Use configuration-based protocol detection
+            expected_ports = get_ports_for_protocol(protocol)
+            transport_protocols = get_protocol_transport(protocol)
+            
+            if not expected_ports:
+                # Fallback to legacy detection for unknown protocols
+                return self._legacy_protocol_filter(protocol)
+            
+            for pkt in self.packets:
+                packet_matches = False
+                
+                # Check TCP packets
+                if 'TCP' in transport_protocols and pkt.haslayer(TCP):
+                    tcp_layer = pkt[TCP]
+                    if tcp_layer.sport in expected_ports or tcp_layer.dport in expected_ports:
+                        packet_matches = True
+                
+                # Check UDP packets  
+                if 'UDP' in transport_protocols and pkt.haslayer(UDP):
+                    udp_layer = pkt[UDP]
+                    if udp_layer.sport in expected_ports or udp_layer.dport in expected_ports:
+                        packet_matches = True
+                
+                # Special payload-based detection for certain protocols
+                if protocol in ['HTTP', 'HTTPS'] and pkt.haslayer(Raw) and pkt.haslayer(TCP):
+                    try:
+                        payload = str(pkt[Raw].load, 'utf-8', errors='ignore')
+                        if any(method in payload for method in ['GET ', 'POST ', 'PUT ', 'DELETE ', 'HTTP/']):
+                            packet_matches = True
+                    except:
+                        pass
+                
+                elif protocol == 'DNS' and pkt.haslayer(DNS):
+                    packet_matches = True
+                
+                if packet_matches:
+                    filtered.append(pkt)
+        
+        return filtered
+    
+    def _legacy_protocol_filter(self, protocol: str) -> List:
+        """
+        Legacy protocol filtering for protocols not in configuration.
+        
+        Args:
+            protocol (str): Protocol name
+            
+        Returns:
+            List: Filtered packets
+        """
+        filtered = []
+        for pkt in self.packets:
+            if protocol == 'HTTP' and pkt.haslayer(Raw) and pkt.haslayer(TCP):
+                try:
+                    payload = str(pkt[Raw].load, 'utf-8', errors='ignore')
+                    if 'HTTP' in payload or 'GET ' in payload or 'POST ' in payload:
+                        filtered.append(pkt)
+                except:
+                    pass
             elif protocol == 'DNS' and pkt.haslayer(DNS):
-                filtered.append(pkt)
-            elif protocol == 'ARP' and pkt.haslayer(ARP):
                 filtered.append(pkt)
         
         return filtered
@@ -571,3 +642,212 @@ class pcapparser:
         if len(flows) > limit:
             print(f"\n... and {len(flows) - limit} more flows")
         print(f"{'='*100}\n")
+    
+    def detect_protocols_in_traffic(self) -> dict:
+        """
+        Detect all protocols present in the traffic using the centralized configuration.
+        
+        Returns:
+            Dict: Protocol detection results with counts and details
+        """
+        if not self._loaded:
+            self.load()
+        
+        protocol_stats = {}
+        
+        # Check for common application protocols using port-based detection
+        from configs.protocol_ports import get_all_protocols
+        
+        for protocol in get_all_protocols():
+            matching_packets = self.filter_by_protocol(protocol)
+            if matching_packets:
+                protocol_stats[protocol] = {
+                    'packet_count': len(matching_packets),
+                    'expected_ports': get_ports_for_protocol(protocol),
+                    'transport_protocols': get_protocol_transport(protocol),
+                    'uses_tcp': uses_tcp(protocol),
+                    'uses_udp': uses_udp(protocol)
+                }
+        
+        return protocol_stats
+    
+    def get_enhanced_summary(self) -> dict:
+        """
+        Get an enhanced summary using the protocol configuration.
+        
+        Returns:
+            dict: Enhanced summary information
+        """
+        if not self._loaded:
+            self.load()
+        
+        summary = {
+            'total_packets': len(self.packets),
+            'protocols': {},
+            'application_protocols': {},
+            'unique_ips': set(),
+            'unique_ports': set(),
+            'port_analysis': {},
+            'file_size': os.path.getsize(self.filename) if os.path.exists(self.filename) else 0
+        }
+        
+        for pkt in self.packets:
+            # Transport layer analysis
+            if pkt.haslayer(TCP):
+                summary['protocols']['TCP'] = summary['protocols'].get('TCP', 0) + 1
+                summary['unique_ports'].add(pkt[TCP].sport)
+                summary['unique_ports'].add(pkt[TCP].dport)
+                self._analyze_port(pkt[TCP].sport, summary['port_analysis'])
+                self._analyze_port(pkt[TCP].dport, summary['port_analysis'])
+            if pkt.haslayer(UDP):
+                summary['protocols']['UDP'] = summary['protocols'].get('UDP', 0) + 1
+                summary['unique_ports'].add(pkt[UDP].sport)
+                summary['unique_ports'].add(pkt[UDP].dport)
+                self._analyze_port(pkt[UDP].sport, summary['port_analysis'])
+                self._analyze_port(pkt[UDP].dport, summary['port_analysis'])
+            if pkt.haslayer(ICMP):
+                summary['protocols']['ICMP'] = summary['protocols'].get('ICMP', 0) + 1
+            if pkt.haslayer(ARP):
+                summary['protocols']['ARP'] = summary['protocols'].get('ARP', 0) + 1
+            if pkt.haslayer(DNS):
+                summary['protocols']['DNS'] = summary['protocols'].get('DNS', 0) + 1
+            
+            # IP analysis
+            if pkt.haslayer(IP):
+                summary['unique_ips'].add(pkt[IP].src)
+                summary['unique_ips'].add(pkt[IP].dst)
+        
+        # Detect application protocols
+        summary['application_protocols'] = self.detect_protocols_in_traffic()
+        
+        # Convert sets to counts
+        summary['unique_ips'] = len(summary['unique_ips'])
+        summary['unique_ports'] = len(summary['unique_ports'])
+        
+        return summary
+    
+    def _analyze_port(self, port: int, port_analysis: dict):
+        """
+        Analyze a port using the configuration.
+        
+        Args:
+            port (int): Port number to analyze
+            port_analysis (dict): Dictionary to store analysis results
+        """
+        if port not in port_analysis:
+            port_analysis[port] = {
+                'count': 0,
+                'protocols': get_protocols_for_port(port),
+                'category': get_port_category(port),
+                'well_known': is_well_known_port(port)
+            }
+        port_analysis[port]['count'] += 1
+    
+    def filter_by_service_type(self, service_type: str) -> List:
+        """
+        Filter packets by service type using the configuration.
+        
+        Args:
+            service_type (str): Type of service ('web', 'database', 'email', etc.)
+            
+        Returns:
+            List: Packets matching the service type
+        """
+        service_mappings = {
+            'web': ['HTTP', 'HTTPS', 'APACHE', 'NGINX'],
+            'database': ['MYSQL', 'POSTGRESQL', 'MSSQL', 'ORACLE', 'MONGODB', 'REDIS'],
+            'email': ['SMTP', 'POP3', 'IMAP'],
+            'file_transfer': ['FTP', 'FTPS', 'SFTP', 'TFTP'],
+            'remote_access': ['SSH', 'TELNET', 'RDP', 'VNC'],
+            'dns': ['DNS'],
+            'voip': ['SIP', 'RTP'],
+            'messaging': ['RABBITMQ', 'KAFKA', 'MQTT'],
+            'monitoring': ['SNMP', 'SYSLOG', 'GRAFANA', 'PROMETHEUS'],
+            'development': ['DJANGO', 'FLASK', 'NODE', 'RAILS'],
+            'container': ['DOCKER', 'KUBERNETES']
+        }
+        
+        protocols = service_mappings.get(service_type.lower(), [])
+        all_packets = []
+        
+        for protocol in protocols:
+            packets = self.filter_by_protocol(protocol)
+            all_packets.extend(packets)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_packets = []
+        for pkt in all_packets:
+            pkt_id = id(pkt)
+            if pkt_id not in seen:
+                seen.add(pkt_id)
+                unique_packets.append(pkt)
+        
+        return unique_packets
+    
+    def get_security_analysis(self) -> dict:
+        """
+        Perform security analysis using the protocol configuration.
+        
+        Returns:
+            Dict: Security analysis results
+        """
+        if not self._loaded:
+            self.load()
+        
+        analysis = {
+            'unencrypted_protocols': {},
+            'administrative_protocols': {},
+            'database_protocols': {},
+            'high_risk_ports': {},
+            'security_recommendations': []
+        }
+        
+        # Define security-sensitive protocol groups
+        unencrypted = ['HTTP', 'FTP', 'TELNET', 'SMTP', 'POP3', 'IMAP']
+        administrative = ['SSH', 'RDP', 'TELNET', 'SNMP']
+        database = ['MYSQL', 'POSTGRESQL', 'MSSQL', 'ORACLE', 'MONGODB']
+        
+        # Analyze each group
+        for protocol in unencrypted:
+            packets = self.filter_by_protocol(protocol)
+            if packets:
+                analysis['unencrypted_protocols'][protocol] = len(packets)
+        
+        for protocol in administrative:
+            packets = self.filter_by_protocol(protocol)
+            if packets:
+                analysis['administrative_protocols'][protocol] = len(packets)
+        
+        for protocol in database:
+            packets = self.filter_by_protocol(protocol)
+            if packets:
+                analysis['database_protocols'][protocol] = len(packets)
+        
+        # Generate security recommendations
+        if analysis['unencrypted_protocols']:
+            analysis['security_recommendations'].append(
+                "Unencrypted protocols detected. Consider using encrypted alternatives (HTTPS, FTPS, SSH, etc.)"
+            )
+        
+        if 'TELNET' in analysis['administrative_protocols']:
+            analysis['security_recommendations'].append(
+                "TELNET detected. Replace with SSH for secure remote access."
+            )
+        
+        if analysis['database_protocols']:
+            analysis['security_recommendations'].append(
+                "Database traffic detected. Ensure proper access controls and encryption."
+            )
+        
+        # Check for non-standard ports
+        enhanced_summary = self.get_enhanced_summary()
+        for port, info in enhanced_summary.get('port_analysis', {}).items():
+            if not info['protocols'] and info['count'] > 10:  # High traffic on unknown ports
+                analysis['high_risk_ports'][port] = {
+                    'count': info['count'],
+                    'category': info['category'],
+                    'reason': 'High traffic on unassigned port'
+                }
+        
+        return analysis

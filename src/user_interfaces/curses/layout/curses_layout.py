@@ -12,19 +12,42 @@ class CursesLayout:
     
     def init_colors(self):
         """Initialize color pairs for the interface"""
-        if not self.colors_initialized and curses.has_colors():
-            curses.start_color()
-            
-            # Define color pairs
-            curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLUE)    # Header
-            curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)   # Success
-            curses.init_pair(3, curses.COLOR_RED, curses.COLOR_BLACK)     # Error
-            curses.init_pair(4, curses.COLOR_YELLOW, curses.COLOR_BLACK)  # Warning
-            curses.init_pair(5, curses.COLOR_CYAN, curses.COLOR_BLACK)    # Info
-            curses.init_pair(6, curses.COLOR_MAGENTA, curses.COLOR_BLACK) # Selected
-            curses.init_pair(7, curses.COLOR_WHITE, curses.COLOR_BLACK)   # Normal
-            
-            self.colors_initialized = True
+        if not self.colors_initialized:
+            try:
+                if curses.has_colors():
+                    curses.start_color()
+                    
+                    # Use default colors if available (better Windows compatibility)
+                    if hasattr(curses, 'use_default_colors'):
+                        curses.use_default_colors()
+                    
+                    # Define color pairs with fallbacks
+                    try:
+                        curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLUE)    # Header
+                        curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)   # Success
+                        curses.init_pair(3, curses.COLOR_RED, curses.COLOR_BLACK)     # Error
+                        curses.init_pair(4, curses.COLOR_YELLOW, curses.COLOR_BLACK)  # Warning
+                        curses.init_pair(5, curses.COLOR_CYAN, curses.COLOR_BLACK)    # Info
+                        curses.init_pair(6, curses.COLOR_MAGENTA, curses.COLOR_BLACK) # Selected
+                        curses.init_pair(7, curses.COLOR_WHITE, curses.COLOR_BLACK)   # Normal
+                    except curses.error:
+                        # Fallback if color initialization fails
+                        pass
+                        
+                self.colors_initialized = True
+            except Exception:
+                # If color initialization fails completely, continue without colors
+                self.colors_initialized = True
+
+    def get_color_pair(self, pair_num: int):
+        """Safely get a color pair with fallback"""
+        try:
+            if curses.has_colors() and self.colors_initialized:
+                return curses.color_pair(pair_num)
+            else:
+                return curses.A_NORMAL
+        except:
+            return curses.A_NORMAL
     
     def clear_screen(self):
         """Clear the entire screen"""
@@ -39,12 +62,12 @@ class CursesLayout:
         
         # Draw header with color
         header_text = f" {title} "
-        self.stdscr.addstr(0, 0, header_text[:width-1], curses.color_pair(1) | curses.A_BOLD)
+        self.stdscr.addstr(0, 0, header_text[:width-1], self.get_color_pair(1) | curses.A_BOLD)
         
         # Fill rest of header line
         remaining_width = width - len(header_text)
         if remaining_width > 0:
-            self.stdscr.addstr(0, len(header_text), " " * remaining_width, curses.color_pair(1))
+            self.stdscr.addstr(0, len(header_text), " " * remaining_width, self.get_color_pair(1))
     
     def draw_status_bar(self, message: str, mode: str = ""):
         """Draw the status bar at the bottom"""
@@ -236,20 +259,20 @@ class CursesLayout:
                 self.stdscr.addstr(start_y + 2 + i, 4, detail[:width-6], curses.color_pair(7))
     
     def draw_packet_list(self, packets: List[Any], selected_index: int, scroll_offset: int):
-        """Draw the list of packets in a netflow"""
+        """Draw the list of packets in a netflow with detailed information"""
         height, width = self.stdscr.getmaxyx()
         start_y = 2
         # Reserve space for header(1) + title(1) + headers(1) + help(1) + status(1) = 5 lines
         content_start_y = start_y + 2  # After title and headers
-        content_end_y = height - 1  # Before help and status bars
+        content_end_y = height - 2  # Before help and status bars
         visible_lines = content_end_y - content_start_y
         
         # Title
         title = f"Packets in Netflow ({len(packets)} total):"
         self.stdscr.addstr(start_y, 2, title, curses.color_pair(1) | curses.A_BOLD)
         
-        # Headers
-        headers = f"{'#':<6} {'Time':<12} {'Source':<18} {'Dest':<18} {'Proto':<8} {'Size':<8}"
+        # Enhanced headers with more information
+        headers = f"{'#':<4} {'Time':<10} {'Src IP':<15} {'Dst IP':<15} {'Src Port':<8} {'Dst Port':<8} {'Proto':<6} {'Size':<6} {'Flags':<6} {'Info'}"
         self.stdscr.addstr(start_y + 1, 2, headers[:width-4], curses.color_pair(1) | curses.A_UNDERLINE)
         
         if not packets:
@@ -265,17 +288,12 @@ class CursesLayout:
             y_pos = content_start_y + i
             packet = packets[packet_index]
             
-            # Format packet information
-            try:
-                time_str = f"{getattr(packet, 'time', 0):.3f}"
-                src = getattr(packet, 'src', 'Unknown')
-                dst = getattr(packet, 'dst', 'Unknown')
-                proto = getattr(packet, 'proto', 'Unknown')
-                size = len(getattr(packet, 'load', b''))
-                
-                packet_text = f"{packet_index+1:<6} {time_str:<12} {src:<18} {dst:<18} {proto:<8} {size:<8}"
-            except:
-                packet_text = f"{packet_index+1:<6} {'N/A':<12} {'Unknown':<18} {'Unknown':<18} {'N/A':<8} {'0':<8}"
+            # Extract detailed packet information
+            packet_info = self._extract_packet_info(packet)
+            
+            packet_text = (f"{packet_index+1:<4} {packet_info['time']:<10} {packet_info['src_ip']:<15} "
+                          f"{packet_info['dst_ip']:<15} {packet_info['src_port']:<8} {packet_info['dst_port']:<8} "
+                          f"{packet_info['protocol']:<6} {packet_info['size']:<6} {packet_info['flags']:<6} {packet_info['info']}")
             
             # Highlight selected item
             if packet_index == selected_index:
@@ -284,6 +302,322 @@ class CursesLayout:
                 attr = curses.color_pair(7)
             
             self.stdscr.addstr(y_pos, 2, packet_text[:width-4], attr)
+
+    def _extract_packet_info(self, packet) -> Dict[str, str]:
+        """Extract detailed information from a packet"""
+        try:
+            # Try to import scapy and extract proper packet info
+            from scapy.all import IP, TCP, UDP, ICMP, ARP, Raw
+            
+            info = {
+                'time': 'N/A',
+                'src_ip': 'Unknown',
+                'dst_ip': 'Unknown', 
+                'src_port': '0',
+                'dst_port': '0',
+                'protocol': 'Unknown',
+                'size': '0',
+                'flags': '',
+                'info': ''
+            }
+            
+            # Extract timestamp
+            if hasattr(packet, 'time'):
+                info['time'] = f"{packet.time:.3f}"[-10:]  # Last 10 chars
+            
+            # Extract IP layer information
+            if packet.haslayer(IP):
+                ip_layer = packet[IP]
+                info['src_ip'] = str(ip_layer.src)
+                info['dst_ip'] = str(ip_layer.dst)
+                info['protocol'] = ip_layer.proto
+                
+                # TCP information
+                if packet.haslayer(TCP):
+                    tcp_layer = packet[TCP]
+                    info['src_port'] = str(tcp_layer.sport)
+                    info['dst_port'] = str(tcp_layer.dport)
+                    info['protocol'] = 'TCP'
+                    # Safe handling of TCP flags
+                    try:
+                        info['flags'] = f"0x{int(tcp_layer.flags):02x}"
+                    except (ValueError, TypeError):
+                        info['flags'] = str(tcp_layer.flags)
+                    info['info'] = f"Seq={tcp_layer.seq} Ack={tcp_layer.ack}"
+                
+                # UDP information  
+                elif packet.haslayer(UDP):
+                    udp_layer = packet[UDP]
+                    info['src_port'] = str(udp_layer.sport)
+                    info['dst_port'] = str(udp_layer.dport)
+                    info['protocol'] = 'UDP'
+                    info['info'] = f"Len={udp_layer.len}"
+                
+                # ICMP information
+                elif packet.haslayer(ICMP):
+                    icmp_layer = packet[ICMP]
+                    info['protocol'] = 'ICMP'
+                    info['info'] = f"Type={icmp_layer.type} Code={icmp_layer.code}"
+            
+            # ARP information
+            elif packet.haslayer(ARP):
+                arp_layer = packet[ARP]
+                info['src_ip'] = str(arp_layer.psrc)
+                info['dst_ip'] = str(arp_layer.pdst)
+                info['protocol'] = 'ARP'
+                info['info'] = f"Op={arp_layer.op}"
+            
+            # Packet size
+            info['size'] = str(len(packet))
+            
+            # If no specific info, use packet summary
+            if not info['info']:
+                info['info'] = packet.summary()[:20] if hasattr(packet, 'summary') else ''
+            
+            return info
+            
+        except Exception as e:
+            # Fallback to basic information
+            return {
+                'time': f"{getattr(packet, 'time', 0):.3f}"[-10:],
+                'src_ip': str(getattr(packet, 'src', 'Unknown'))[:15],
+                'dst_ip': str(getattr(packet, 'dst', 'Unknown'))[:15],
+                'src_port': str(getattr(packet, 'sport', 0)),
+                'dst_port': str(getattr(packet, 'dport', 0)),
+                'protocol': str(getattr(packet, 'proto', 'Unknown')),
+                'size': str(len(getattr(packet, 'load', b''))),
+                'flags': '',
+                'info': 'Error extracting info'
+            }
+
+    def _safe_format_field(self, field_value, format_spec="") -> str:
+        """Safely format a Scapy field value to string"""
+        try:
+            if format_spec:
+                # For fields that support formatting (like integers)
+                if isinstance(field_value, int):
+                    return format(field_value, format_spec)
+                else:
+                    # Convert to string first, then try formatting
+                    return format(str(field_value), format_spec)
+            else:
+                # Simple string conversion
+                return str(field_value)
+        except (ValueError, TypeError):
+            # Fallback to simple string conversion
+            return str(field_value)
+
+    def draw_packet_detail(self, packet, packet_index: int, scroll_offset: int = 0):
+        """Draw detailed information about a specific packet with scrolling support"""
+        height, width = self.stdscr.getmaxyx()
+        start_y = 2
+        
+        # Title
+        title = f"Packet Detail - Packet #{packet_index + 1}"
+        self.stdscr.addstr(start_y, 2, title, self.get_color_pair(1) | curses.A_BOLD)
+        
+        # Calculate available space for content
+        content_start_y = start_y + 2
+        content_end_y = height - 2  # Reserve space for help and status bars
+        visible_lines = content_end_y - content_start_y
+        
+        # Generate all packet detail lines first
+        detail_lines = self._generate_packet_detail_lines(packet)
+        
+        # Apply scrolling
+        start_line = min(scroll_offset, max(0, len(detail_lines) - visible_lines))
+        end_line = start_line + visible_lines
+        visible_detail_lines = detail_lines[start_line:end_line]
+        
+        # Display the visible lines
+        current_y = content_start_y
+        for line in visible_detail_lines:
+            if current_y < content_end_y:
+                # Determine color based on line content
+                if line.strip().endswith(":") and not line.startswith("    "):
+                    # Layer headers
+                    color = self.get_color_pair(1) | curses.A_BOLD
+                elif line.startswith("  ") and line.strip().endswith(":"):
+                    # Sub-layer headers
+                    color = self.get_color_pair(1) | curses.A_BOLD
+                else:
+                    # Regular content
+                    color = self.get_color_pair(7)
+                
+                self.stdscr.addstr(current_y, 4, line[:width-6], color)
+                current_y += 1
+        
+        # Show scroll indicator if there's more content
+        if len(detail_lines) > visible_lines:
+            scroll_indicator = f"[{start_line + 1}-{min(end_line, len(detail_lines))} of {len(detail_lines)}]"
+            self.stdscr.addstr(start_y, width - len(scroll_indicator) - 2, scroll_indicator, self.get_color_pair(5))
+
+    def _generate_packet_detail_lines(self, packet) -> list:
+        """Generate all packet detail lines for scrolling display"""
+        detail_lines = []
+        
+        try:
+            from scapy.all import IP, TCP, UDP, ICMP, ARP, Raw, Ether
+            
+            # Basic packet information
+            detail_lines.extend([
+                f"Packet Size: {len(packet)} bytes",
+                f"Timestamp: {getattr(packet, 'time', 'N/A')}",
+                "",
+                "Layer Information:",
+            ])
+            
+            # Ethernet layer
+            if packet.haslayer(Ether):
+                eth = packet[Ether]
+                detail_lines.extend([
+                    "  Ethernet:",
+                    f"    Source MAC: {self._safe_format_field(eth.src)}",
+                    f"    Dest MAC: {self._safe_format_field(eth.dst)}",
+                    f"    Type: 0x{self._safe_format_field(eth.type, '04x')}",
+                    ""
+                ])
+            
+            # IP layer
+            if packet.haslayer(IP):
+                ip = packet[IP]
+                detail_lines.extend([
+                    "  IP:",
+                    f"    Version: {self._safe_format_field(ip.version)}",
+                    f"    Header Length: {self._safe_format_field(ip.ihl)}",
+                    f"    Type of Service: 0x{self._safe_format_field(ip.tos, '02x')}",
+                    f"    Total Length: {self._safe_format_field(ip.len)}",
+                    f"    Identification: {self._safe_format_field(ip.id)}",
+                    f"    Flags: 0x{self._safe_format_field(ip.flags, '01x')}",
+                    f"    Fragment Offset: {self._safe_format_field(ip.frag)}",
+                    f"    TTL: {self._safe_format_field(ip.ttl)}",
+                    f"    Protocol: {self._safe_format_field(ip.proto)}",
+                    f"    Checksum: 0x{self._safe_format_field(ip.chksum, '04x')}",
+                    f"    Source IP: {self._safe_format_field(ip.src)}",
+                    f"    Dest IP: {self._safe_format_field(ip.dst)}",
+                    ""
+                ])
+            
+            # TCP layer
+            if packet.haslayer(TCP):
+                tcp = packet[TCP]
+                # Handle TCP flags safely
+                try:
+                    flags_hex = f"0x{int(tcp.flags):02x}"
+                except (ValueError, TypeError):
+                    flags_hex = str(tcp.flags)
+                
+                detail_lines.extend([
+                    "  TCP:",
+                    f"    Source Port: {self._safe_format_field(tcp.sport)}",
+                    f"    Dest Port: {self._safe_format_field(tcp.dport)}",
+                    f"    Sequence Number: {self._safe_format_field(tcp.seq)}",
+                    f"    Ack Number: {self._safe_format_field(tcp.ack)}",
+                    f"    Data Offset: {self._safe_format_field(tcp.dataofs)}",
+                    f"    Flags: {flags_hex} ({self._tcp_flags_to_string(tcp.flags)})",
+                    f"    Window Size: {self._safe_format_field(tcp.window)}",
+                    f"    Checksum: 0x{self._safe_format_field(tcp.chksum, '04x')}",
+                    f"    Urgent Pointer: {self._safe_format_field(tcp.urgptr)}",
+                    ""
+                ])
+            
+            # UDP layer
+            elif packet.haslayer(UDP):
+                udp = packet[UDP]
+                detail_lines.extend([
+                    "  UDP:",
+                    f"    Source Port: {self._safe_format_field(udp.sport)}",
+                    f"    Dest Port: {self._safe_format_field(udp.dport)}",
+                    f"    Length: {self._safe_format_field(udp.len)}",
+                    f"    Checksum: 0x{self._safe_format_field(udp.chksum, '04x')}",
+                    ""
+                ])
+            
+            # ICMP layer
+            elif packet.haslayer(ICMP):
+                icmp = packet[ICMP]
+                detail_lines.extend([
+                    "  ICMP:",
+                    f"    Type: {self._safe_format_field(icmp.type)}",
+                    f"    Code: {self._safe_format_field(icmp.code)}",
+                    f"    Checksum: 0x{self._safe_format_field(icmp.chksum, '04x')}",
+                    f"    ID: {self._safe_format_field(icmp.id)}",
+                    f"    Sequence: {self._safe_format_field(icmp.seq)}",
+                    ""
+                ])
+            
+            # ARP layer
+            if packet.haslayer(ARP):
+                arp = packet[ARP]
+                detail_lines.extend([
+                    "  ARP:",
+                    f"    Hardware Type: {self._safe_format_field(arp.hwtype)}",
+                    f"    Protocol Type: 0x{self._safe_format_field(arp.ptype, '04x')}",
+                    f"    Hardware Size: {self._safe_format_field(arp.hwlen)}",
+                    f"    Protocol Size: {self._safe_format_field(arp.plen)}",
+                    f"    Operation: {self._safe_format_field(arp.op)}",
+                    f"    Sender HW Addr: {self._safe_format_field(arp.hwsrc)}",
+                    f"    Sender Protocol Addr: {self._safe_format_field(arp.psrc)}",
+                    f"    Target HW Addr: {self._safe_format_field(arp.hwdst)}",
+                    f"    Target Protocol Addr: {self._safe_format_field(arp.pdst)}",
+                    ""
+                ])
+            
+            # Raw payload
+            if packet.haslayer(Raw):
+                raw = packet[Raw]
+                payload = raw.load
+                
+                detail_lines.extend([
+                    "  Payload:",
+                ])
+                
+                # Show hex dump of payload (first 1024 bytes to avoid excessive data)
+                hex_data = payload[:1024]
+                for i in range(0, len(hex_data), 16):
+                    chunk = hex_data[i:i+16]
+                    hex_str = ' '.join(f'{b:02x}' for b in chunk)
+                    ascii_str = ''.join(chr(b) if 32 <= b <= 126 else '.' for b in chunk)
+                    line = f"    {i:04x}: {hex_str:<48} {ascii_str}"
+                    detail_lines.append(line)
+                
+                # Add info if payload was truncated
+                if len(payload) > 1024:
+                    detail_lines.append(f"    ... (showing first 1024 of {len(payload)} bytes)")
+                detail_lines.append("")
+            
+        except Exception as e:
+            # Fallback to simple packet display
+            detail_lines.extend([
+                f"Error displaying packet details: {str(e)}",
+                "",
+                "Packet Summary:",
+                f"{packet.summary() if hasattr(packet, 'summary') else str(packet)}"
+            ])
+        
+        return detail_lines
+
+    def _tcp_flags_to_string(self, flags) -> str:
+        """Convert TCP flags to readable string"""
+        try:
+            # Convert flags to integer if it's not already
+            if isinstance(flags, int):
+                flags_int = flags
+            else:
+                flags_int = int(flags)
+            
+            flag_names = []
+            if flags_int & 0x01: flag_names.append("FIN")
+            if flags_int & 0x02: flag_names.append("SYN") 
+            if flags_int & 0x04: flag_names.append("RST")
+            if flags_int & 0x08: flag_names.append("PSH")
+            if flags_int & 0x10: flag_names.append("ACK")
+            if flags_int & 0x20: flag_names.append("URG")
+            if flags_int & 0x40: flag_names.append("ECE")
+            if flags_int & 0x80: flag_names.append("CWR")
+            return ",".join(flag_names) if flag_names else "None"
+        except (ValueError, TypeError):
+            return str(flags)
     
     def draw_error_message(self, message: str):
         """Draw an error message in the center of the screen"""
