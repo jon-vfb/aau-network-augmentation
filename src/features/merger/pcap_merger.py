@@ -106,51 +106,55 @@ class PcapMerger:
             return False
             
         try:
-            # Extract netflows and timing information
+            # Extract netflows and timing information (IP packets only)
             left_flows = self._extract_netflows_with_timing(self.left_parser)
             right_flows = self._extract_netflows_with_timing(self.right_parser)
             
-            # Calculate base timestamp and time ranges
-            left_base = min(ts for flow in left_flows.values() for ts in flow['timestamps'])
-            right_base = min(ts for flow in right_flows.values() for ts in flow['timestamps'])
+            # Get all packets including non-IP packets
+            left_packets = self.left_parser.get_packets()
+            right_packets = self.right_parser.get_packets()
+            
+            # Calculate base timestamp from all packets
+            left_base = min(float(pkt.time) for pkt in left_packets)
+            right_base = min(float(pkt.time) for pkt in right_packets)
             
             merged_packets = []
             
-            # Process left (benign) packets first
-            for flow in left_flows.values():
-                for pkt, ts in zip(flow['packets'], flow['timestamps']):
-                    merged_packets.append((ts, pkt))
+            # Process left (benign) packets - include ALL packets
+            for pkt in left_packets:
+                merged_packets.append((float(pkt.time), pkt))
                     
             # Process right (malicious) packets with IP translation
-            for flow in right_flows.values():
-                # Get translated IPs for this flow
-                new_src_ip = self._get_next_available_ip(flow['src_ip'])
-                new_dst_ip = self._get_next_available_ip(flow['dst_ip'])
+            for pkt in right_packets:
+                # Create a copy of the packet for modification
+                new_pkt = pkt.copy()
                 
-                if self.ip_translation_range and (not new_src_ip or not new_dst_ip):
-                    print(f"Warning: Could not allocate new IPs for flow {flow['src_ip']}->{flow['dst_ip']}")
-                    continue
+                # Apply IP translation if packet has IP layer and range is set
+                if self.ip_translation_range and new_pkt.haslayer(IP):
+                    original_src = new_pkt[IP].src
+                    original_dst = new_pkt[IP].dst
                     
-                for pkt, ts in zip(flow['packets'], flow['timestamps']):
-                    # Create a copy of the packet for modification
-                    new_pkt = pkt.copy()
+                    # Get translated IPs
+                    new_src_ip = self._get_next_available_ip(original_src)
+                    new_dst_ip = self._get_next_available_ip(original_dst)
                     
-                    # Apply IP translation if range is set
-                    if self.ip_translation_range:
-                        if new_pkt.haslayer(IP):
-                            new_pkt[IP].src = new_src_ip
-                            new_pkt[IP].dst = new_dst_ip
-                            # Delete checksums to force recalculation
-                            del new_pkt[IP].chksum
-                            if new_pkt.haslayer(TCP):
-                                del new_pkt[TCP].chksum
-                            elif new_pkt.haslayer(UDP):
-                                del new_pkt[UDP].chksum
-                                
-                    # Calculate relative timestamp
-                    relative_ts = ts - right_base
-                    new_ts = left_base + self._apply_jitter(relative_ts)
-                    merged_packets.append((new_ts, new_pkt))
+                    # Only translate if we successfully got new IPs
+                    if new_src_ip and new_dst_ip:
+                        new_pkt[IP].src = new_src_ip
+                        new_pkt[IP].dst = new_dst_ip
+                        # Delete checksums to force recalculation
+                        del new_pkt[IP].chksum
+                        if new_pkt.haslayer(TCP):
+                            del new_pkt[TCP].chksum
+                        elif new_pkt.haslayer(UDP):
+                            del new_pkt[UDP].chksum
+                    else:
+                        print(f"Warning: Could not allocate new IPs for {original_src}->{original_dst}, keeping original IPs")
+                        
+                # Calculate relative timestamp with jitter
+                relative_ts = float(pkt.time) - right_base
+                new_ts = left_base + self._apply_jitter(relative_ts)
+                merged_packets.append((new_ts, new_pkt))
                     
             # Sort packets by timestamp
             merged_packets.sort(key=lambda x: x[0])
@@ -314,6 +318,7 @@ class PcapMerger:
         stats = {
             'left_packets': len(self.left_parser.get_packets()),
             'right_packets': len(self.right_parser.get_packets()),
+            'total_expected_packets': len(self.left_parser.get_packets()) + len(self.right_parser.get_packets()),
             'left_netflows': len(left_flows),
             'right_netflows': len(right_flows),
             'total_expected_netflows': len(left_flows) + len(right_flows),
@@ -345,7 +350,7 @@ class PcapMerger:
         if self.ip_translation_range:
             print(f"  IP Translation Range: {self.ip_translation_range}")
         print(f"Expected Output:")
-        print(f"  Total Packets: {stats['left_packets'] + stats['right_packets']}")
+        print(f"  Total Packets: {stats['total_expected_packets']}")
         print(f"  Total Netflows: {stats['total_expected_netflows']}")
         
         print(f"{'='*80}\n")

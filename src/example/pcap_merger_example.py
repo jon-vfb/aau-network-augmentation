@@ -90,9 +90,20 @@ def main():
         
         print(f"Merged PCAP: {merged_parser.get_packet_count()} packets, {len(merged_flows)} netflows")
         
-        # Verify netflow count
+        # Verify packet and netflow counts
+        expected_packets = left_parser.get_packet_count() + right_parser.get_packet_count()
+        actual_packets = merged_parser.get_packet_count()
         expected_flows = len(left_flows) + len(right_flows)
         actual_flows = len(merged_flows)
+        
+        print(f"\nPacket Verification:")
+        print(f"Expected: {expected_packets} packets")
+        print(f"Actual: {actual_packets} packets")
+        
+        if actual_packets == expected_packets:
+            print("✅ Packet count matches expected!")
+        else:
+            print("❌ Packet count mismatch!")
         
         print(f"\nNetflow Verification:")
         print(f"Expected: {expected_flows} netflows")
