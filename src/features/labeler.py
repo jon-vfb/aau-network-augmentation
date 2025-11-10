@@ -2,6 +2,7 @@ import os
 import sys
 import scapy.all as scapy
 from scapy.layers.inet import IP
+import pandas as pd
 
 
 # Ensure the repository's `src` directory is on sys.path so `classes` can be imported
@@ -32,7 +33,7 @@ class Labeler:
         for i, pkt in enumerate(packets, start=1):
                 if IP in pkt:
                     ts = pkt.time  # packet timestamp
-                    print(f"Time: {ts}")
+                    print(f"Packet {i} Time: {ts}")
     
 
     def extract_IP_header(self, pcap_path: str):
@@ -41,6 +42,7 @@ class Labeler:
             if IP in pkt:
                 ip_layer = pkt[IP]
                 print(f"Packet {i}:")
+                print(f"Packet {i} IP Layer:")
                 ip_layer.show()  # prints all fields of the IP header
                 print("-" * 40) # divider i terminalen så man kan skælne mellem pakkerne
 
@@ -79,15 +81,115 @@ class Labeler:
 
         return len(packets)
 
+    def label_packets(self, pcap_path: str, labeling_strategy: dict, output_csv: str):
+        """
+        Label packets based on a labeling strategy and save the results to a CSV file.
+
+        Args:
+            pcap_path (str): Path to the pcap/pcapng file to inspect.
+            labeling_strategy (dict): A dictionary mapping packet indices to labels.
+            output_csv (str): Path to the output CSV file.
+
+        This method will label each packet based on the provided strategy and save the results to a CSV file.
+        """
+        packets = scapy.rdpcap(pcap_path)
+        labeled_data = []
+
+        for index, packet in enumerate(packets):
+            label = labeling_strategy.get(index, 1)  # Default to benign (1)
+            labeled_data.append({'index': index, 'label': label})
+
+        # Save to CSV
+        df = pd.DataFrame(labeled_data)
+        df.to_csv(output_csv, index=False)
+        print(f"Labeled packets saved to {output_csv}")
+
+
+    def label_and_export(self, pcap_path: str, csv_path: str, label: str):
+        """
+        Label packets and export relevant information to a CSV file.
+
+        Args:
+            pcap_path (str): Path to the pcap/pcapng file to inspect.
+            csv_path (str): Path to the output CSV file.
+            label (str): The label to assign to each packet.
+
+        This method will label each packet and export the relevant information to a CSV file.
+        The CSV will include common fields like timestamp, index, protocol, length, and layer-specific
+        information when available.
+        """
+        packets = scapy.rdpcap(pcap_path)
+        data = []
+        
+        for idx, pkt in enumerate(packets):
+            # Common packet information available for all packets
+            packet_info = {
+                'index': idx,
+                'timestamp': pkt.time,
+                'length': len(pkt),
+                'protocol': pkt.name,
+                'label': label
+            }
+            
+            # Add IP layer information if present
+            if IP in pkt:
+                ip_layer = pkt[IP]
+                packet_info.update({
+                    'source_ip': ip_layer.src,
+                    'destination_ip': ip_layer.dst,
+                    'ip_version': ip_layer.version,
+                    'ttl': ip_layer.ttl,
+                    'ip_len': ip_layer.len
+                })
+            
+            # Add layer specific information based on protocol
+            if 'TCP' in pkt:
+                tcp_layer = pkt['TCP']
+                packet_info.update({
+                    'source_port': tcp_layer.sport,
+                    'destination_port': tcp_layer.dport,
+                    'tcp_flags': tcp_layer.flags
+                })
+            elif 'UDP' in pkt:
+                udp_layer = pkt['UDP']
+                packet_info.update({
+                    'source_port': udp_layer.sport,
+                    'destination_port': udp_layer.dport,
+                    'udp_len': udp_layer.len
+                })
+            elif 'ICMP' in pkt:
+                icmp_layer = pkt['ICMP']
+                packet_info.update({
+                    'icmp_type': icmp_layer.type,
+                    'icmp_code': icmp_layer.code
+                })
+            elif 'ARP' in pkt:
+                arp_layer = pkt['ARP']
+                packet_info.update({
+                    'arp_op': arp_layer.op,
+                    'arp_hwsrc': arp_layer.hwsrc,
+                    'arp_hwdst': arp_layer.hwdst,
+                    'arp_psrc': arp_layer.psrc,
+                    'arp_pdst': arp_layer.pdst
+                })
+            
+            data.append(packet_info)
+
+        # Create a DataFrame and save to CSV
+        df = pd.DataFrame(data)
+        df.to_csv(csv_path, index=False)
+        print(f"Data exported to {csv_path}")
+        print(f"Total packets processed: {len(packets)}")
 
 
 if __name__ == "__main__":  # For testing
     labeler = Labeler()
     # Use absolute path to the test pcap file
     test_pcap = os.path.join(os.path.dirname(__file__), "testpcap", "labeltest.pcapng")
-    print(labeler.extract_time(test_pcap))
-    print(labeler.extract_IP_header(test_pcap))
-    
+    #print(labeler.extract_time(test_pcap))
+    #print(labeler.extract_IP_header(test_pcap))
+    labeler.label_and_export(test_pcap, "labeled_output.csv", "benign")
+
 
 
 
