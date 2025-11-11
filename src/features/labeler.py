@@ -97,5 +97,4 @@ if __name__ == "__main__":
     samples_dir = os.path.abspath(os.path.join(base_dir, "..", "..", "samples"))
     test_pcap = os.path.join(samples_dir, "pcaphandshake_1.pcapng")
     output_csv = os.path.join(samples_dir, "labeled_output.csv")
-    print(f"Total packets processed:")
     labeler.label_and_export(test_pcap, output_csv, "benign")
