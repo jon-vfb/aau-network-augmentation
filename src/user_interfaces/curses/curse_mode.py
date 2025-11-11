@@ -94,6 +94,20 @@ class PcapCursesUI:
             self.draw_packet_list_screen()
         elif self.mode == "packet_detail":
             self.draw_packet_detail_screen()
+        elif self.mode == "augmentation_menu":
+            self.draw_augmentation_menu_screen()
+        elif self.mode == "augmentation_benign_select":
+            self.draw_augmentation_benign_select_screen()
+        elif self.mode == "augmentation_malicious_select":
+            self.draw_augmentation_malicious_select_screen()
+        elif self.mode == "augmentation_config":
+            self.draw_augmentation_config_screen()
+        elif self.mode == "augmentation_confirm":
+            self.draw_augmentation_confirm_screen()
+        elif self.mode == "augmentation_running":
+            self.draw_augmentation_running_screen()
+        elif self.mode == "augmentation_results":
+            self.draw_augmentation_results_screen()
         
         self.layout.refresh()
     
@@ -171,6 +185,20 @@ class PcapCursesUI:
             return self.handle_packet_list_input(key)
         elif self.mode == "packet_detail":
             return self.handle_packet_detail_input(key)
+        elif self.mode == "augmentation_menu":
+            return self.handle_augmentation_menu_input(key)
+        elif self.mode == "augmentation_benign_select":
+            return self.handle_augmentation_benign_select_input(key)
+        elif self.mode == "augmentation_malicious_select":
+            return self.handle_augmentation_malicious_select_input(key)
+        elif self.mode == "augmentation_config":
+            return self.handle_augmentation_config_input(key)
+        elif self.mode == "augmentation_confirm":
+            return self.handle_augmentation_confirm_input(key)
+        elif self.mode == "augmentation_running":
+            return self.handle_augmentation_running_input(key)
+        elif self.mode == "augmentation_results":
+            return self.handle_augmentation_results_input(key)
         
         return True
     
@@ -219,7 +247,9 @@ class PcapCursesUI:
                 self.scroll_offset = 0
                 self.status_message = "Viewing netflows"
             elif self.menu_selected == 1:  # Augmentations
-                self.status_message = "Augmentations feature coming soon!"
+                self.mode = "augmentation_menu"
+                self.menu_selected = 0
+                self.status_message = "Augmentation options"
             elif self.menu_selected == 2:  # Back to PCAP List
                 self.mode = "pcap_list"
                 self.selected_index = 0
@@ -324,6 +354,291 @@ class PcapCursesUI:
             # Go to bottom - the layout will clamp this to appropriate value
             self.packet_detail_scroll = 1000  # Large number, will be clamped by layout
             self.status_message = "Bottom of packet"
+        
+        return True
+    
+    # ==================== AUGMENTATION SCREENS ====================
+    
+    def draw_augmentation_menu_screen(self):
+        """Draw the augmentation menu screen"""
+        self.layout.draw_header("Augmentations")
+        
+        menu_items = ["Merge PCAPs", "Back"]
+        self.layout.draw_menu(
+            menu_items, 
+            self.menu_selected,
+            title="Select Augmentation Option"
+        )
+        
+        self.layout.draw_help_bar("↑↓: Navigate | Enter: Select | ESC: Back | q: Quit")
+        self.layout.draw_status_bar(self.status_message, self.mode)
+    
+    def draw_augmentation_benign_select_screen(self):
+        """Draw the benign PCAP selection screen"""
+        self.layout.draw_header("Augmentation - Select Benign PCAP")
+        self.layout.draw_pcap_list(self.logic.available_pcaps, self.selected_index, self.scroll_offset)
+        self.layout.draw_help_bar("↑↓: Navigate | Enter: Select | ESC: Cancel | q: Quit")
+        self.layout.draw_status_bar(self.status_message, self.mode)
+    
+    def draw_augmentation_malicious_select_screen(self):
+        """Draw the malicious PCAP selection screen"""
+        self.layout.draw_header("Augmentation - Select Malicious PCAP")
+        self.layout.draw_pcap_list(self.logic.available_pcaps, self.selected_index, self.scroll_offset)
+        self.layout.draw_help_bar("↑↓: Navigate | Enter: Select | ESC: Cancel | q: Quit")
+        self.layout.draw_status_bar(self.status_message, self.mode)
+    
+    def draw_augmentation_config_screen(self):
+        """Draw the augmentation configuration screen"""
+        self.layout.draw_header("Augmentation - Configure Options")
+        
+        state = self.logic.get_augmentation_state()
+        
+        config_text = f"""
+Project Name:            [{state.get('project_name', 'Not set')}]
+IP Translation Range:    [{state.get('ip_translation_range', 'None (optional)')}]
+Jitter Max (seconds):    [{state.get('jitter_max', 0.1)}]
+
+Configuration Instructions:
+- Project name: Name for organizing output
+- IP Translation: Optional CIDR range for malicious traffic (e.g., 192.168.100.0/24)
+- Jitter: Add timing variations for realism (0.0 - 1.0 seconds)
+
+Press ENTER to continue or ESC to go back
+"""
+        
+        self.layout.draw_text_box(config_text, 10, 2)
+        self.layout.draw_help_bar("Enter: Continue | ESC: Back | q: Quit")
+        self.layout.draw_status_bar(self.status_message, self.mode)
+    
+    def draw_augmentation_confirm_screen(self):
+        """Draw the augmentation confirmation screen"""
+        self.layout.draw_header("Augmentation - Confirm Settings")
+        
+        state = self.logic.get_augmentation_state()
+        benign = os.path.basename(state.get('benign_pcap', 'Not selected'))
+        malicious = os.path.basename(state.get('malicious_pcap', 'Not selected'))
+        
+        confirm_text = f"""
+Benign PCAP:             {benign}
+Malicious PCAP:          {malicious}
+Project Name:            {state.get('project_name', 'Not set')}
+IP Translation Range:    {state.get('ip_translation_range', 'None')}
+Jitter Max (seconds):    {state.get('jitter_max', 0.1)}
+
+Confirm to start augmentation process?
+
+[Confirm] or [Cancel]
+"""
+        
+        menu_items = ["Confirm & Start", "Cancel & Edit"]
+        self.layout.draw_text_box(confirm_text, 8, 2)
+        self.layout.draw_menu(menu_items, self.menu_selected, title="")
+        
+        self.layout.draw_help_bar("↑↓: Navigate | Enter: Select | q: Quit")
+        self.layout.draw_status_bar(self.status_message, self.mode)
+    
+    def draw_augmentation_running_screen(self):
+        """Draw the augmentation progress screen"""
+        self.layout.draw_header("Augmentation - Processing")
+        
+        progress_text = """
+Starting augmentation process...
+
+⟳ Labeling benign packets...
+⟳ Labeling malicious packets...
+⟳ Merging PCAP files...
+⟳ Resolving timestamps...
+⟳ Finalizing output...
+
+Please wait...
+"""
+        
+        self.layout.draw_text_box(progress_text, 12, 5)
+        self.layout.draw_status_bar("Processing augmentation...", self.mode)
+    
+    def draw_augmentation_results_screen(self):
+        """Draw the augmentation results screen"""
+        self.layout.draw_header("Augmentation - Complete")
+        
+        results = self.logic.get_augmentation_results()
+        
+        if results and results.get('success'):
+            status = "✓ SUCCESS"
+            result_text = f"""
+Project:                 {results.get('project_name', 'N/A')}
+Status:                  {status}
+
+Output Files:
+  Project Directory:    {results.get('project_dir', 'N/A')}
+  Benign CSV:          {os.path.basename(results.get('benign_csv', 'N/A'))}
+  Malicious CSV:       {os.path.basename(results.get('malicious_csv', 'N/A'))}
+  Merged PCAP:         {os.path.basename(results.get('merged_pcap', 'N/A'))}
+
+Merge Statistics:
+  Benign Packets:      {results.get('merge_statistics', {}).get('left_packets', 0)}
+  Malicious Packets:   {results.get('merge_statistics', {}).get('right_packets', 0)}
+  Total Packets:       {results.get('merge_statistics', {}).get('total_expected_packets', 0)}
+
+Press ENTER to return to main menu
+"""
+        else:
+            status = "✗ FAILED"
+            error_msg = results.get('messages', ['Unknown error']) if results else ['Augmentation failed']
+            result_text = f"""
+Project:                 {results.get('project_name', 'N/A') if results else 'N/A'}
+Status:                  {status}
+
+Error Messages:
+"""
+            for msg in error_msg:
+                if '✗' in msg:
+                    result_text += f"\n  {msg}"
+            
+            result_text += "\n\nPress ENTER to return to main menu"
+        
+        self.layout.draw_text_box(result_text, 10, 2)
+        self.layout.draw_help_bar("Enter: Return to Menu | q: Quit")
+        self.layout.draw_status_bar(self.status_message, self.mode)
+    
+    # ==================== AUGMENTATION INPUT HANDLERS ====================
+    
+    def handle_augmentation_menu_input(self, key) -> bool:
+        """Handle input in augmentation menu mode"""
+        if key == 27:  # ESC
+            self.mode = "pcap_info"
+            self.status_message = "Back to PCAP info"
+        elif key == curses.KEY_DOWN or key == ord('j'):
+            if self.menu_selected < 1:  # 2 options (0, 1)
+                self.menu_selected += 1
+        elif key == curses.KEY_UP or key == ord('k'):
+            if self.menu_selected > 0:
+                self.menu_selected -= 1
+        elif key in (ord('\n'), ord(' ')):  # Enter or Space
+            if self.menu_selected == 0:  # Merge PCAPs
+                self.logic.start_augmentation_merge()
+                self.mode = "augmentation_benign_select"
+                self.selected_index = 0
+                self.scroll_offset = 0
+                self.status_message = "Select benign PCAP file"
+            elif self.menu_selected == 1:  # Back
+                self.mode = "pcap_info"
+                self.status_message = "Back to PCAP info"
+        
+        return True
+    
+    def handle_augmentation_benign_select_input(self, key) -> bool:
+        """Handle input in benign PCAP selection mode"""
+        pcap_count = len(self.logic.available_pcaps)
+        
+        if key == 27:  # ESC
+            self.mode = "augmentation_menu"
+            self.menu_selected = 0
+            self.status_message = "Back to augmentation menu"
+        elif key == curses.KEY_DOWN or key == ord('j'):
+            if self.selected_index < pcap_count - 1:
+                self.selected_index += 1
+                self.update_scroll()
+        elif key == curses.KEY_UP or key == ord('k'):
+            if self.selected_index > 0:
+                self.selected_index -= 1
+                self.update_scroll()
+        elif key in (ord('\n'), ord(' ')):  # Enter or Space
+            if pcap_count > 0 and 0 <= self.selected_index < pcap_count:
+                benign_path = self.logic.available_pcaps[self.selected_index]
+                if self.logic.set_benign_pcap(benign_path):
+                    self.mode = "augmentation_malicious_select"
+                    self.selected_index = 0
+                    self.scroll_offset = 0
+                    self.status_message = f"Benign: {os.path.basename(benign_path)} | Select malicious PCAP"
+                else:
+                    self.status_message = f"Error: {self.logic.last_error}"
+        
+        return True
+    
+    def handle_augmentation_malicious_select_input(self, key) -> bool:
+        """Handle input in malicious PCAP selection mode"""
+        pcap_count = len(self.logic.available_pcaps)
+        
+        if key == 27:  # ESC
+            self.mode = "augmentation_benign_select"
+            self.selected_index = 0
+            self.scroll_offset = 0
+            self.status_message = "Back to benign selection"
+        elif key == curses.KEY_DOWN or key == ord('j'):
+            if self.selected_index < pcap_count - 1:
+                self.selected_index += 1
+                self.update_scroll()
+        elif key == curses.KEY_UP or key == ord('k'):
+            if self.selected_index > 0:
+                self.selected_index -= 1
+                self.update_scroll()
+        elif key in (ord('\n'), ord(' ')):  # Enter or Space
+            if pcap_count > 0 and 0 <= self.selected_index < pcap_count:
+                malicious_path = self.logic.available_pcaps[self.selected_index]
+                if self.logic.set_malicious_pcap(malicious_path):
+                    self.mode = "augmentation_config"
+                    self.menu_selected = 0
+                    self.status_message = f"Malicious: {os.path.basename(malicious_path)} | Configure options"
+                else:
+                    self.status_message = f"Error: {self.logic.last_error}"
+        
+        return True
+    
+    def handle_augmentation_config_input(self, key) -> bool:
+        """Handle input in augmentation config mode"""
+        # For now, auto-confirm and go to confirmation screen
+        if key in (ord('\n'), ord(' '), 27):  # Enter, Space, or ESC
+            # For now, use default config
+            self.logic.set_augmentation_config(
+                project_name=self.logic.augmentation_state.get('benign_pcap', 'augmentation').split('/')[-1].split('.')[0] + '_merged',
+                ip_translation_range=None,
+                jitter_max=0.1
+            )
+            self.mode = "augmentation_confirm"
+            self.menu_selected = 0
+            self.status_message = "Confirm augmentation settings"
+        
+        return True
+    
+    def handle_augmentation_confirm_input(self, key) -> bool:
+        """Handle input in augmentation confirmation mode"""
+        if key == 27:  # ESC
+            self.mode = "augmentation_config"
+            self.status_message = "Back to configuration"
+        elif key == curses.KEY_DOWN or key == ord('j'):
+            if self.menu_selected < 1:  # 2 options
+                self.menu_selected += 1
+        elif key == curses.KEY_UP or key == ord('k'):
+            if self.menu_selected > 0:
+                self.menu_selected -= 1
+        elif key in (ord('\n'), ord(' ')):  # Enter or Space
+            if self.menu_selected == 0:  # Confirm
+                self.mode = "augmentation_running"
+                # Run augmentation
+                results = self.logic.run_augmentation_merge()
+                if results:
+                    self.mode = "augmentation_results"
+                    self.status_message = "Augmentation completed"
+                else:
+                    self.mode = "augmentation_results"
+                    self.status_message = f"Augmentation error: {self.logic.last_error}"
+            elif self.menu_selected == 1:  # Cancel
+                self.mode = "augmentation_menu"
+                self.menu_selected = 0
+                self.status_message = "Augmentation cancelled"
+        
+        return True
+    
+    def handle_augmentation_running_input(self, key) -> bool:
+        """Handle input in augmentation running mode"""
+        # No input allowed while running
+        return True
+    
+    def handle_augmentation_results_input(self, key) -> bool:
+        """Handle input in augmentation results mode"""
+        if key in (ord('\n'), ord(' ')):  # Enter or Space
+            self.mode = "pcap_info"
+            self.status_message = "Back to PCAP info"
         
         return True
     
