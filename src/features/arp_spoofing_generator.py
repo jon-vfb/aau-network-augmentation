@@ -1,4 +1,9 @@
 from scapy.all import Ether, ARP, wrpcap, rdpcap
+from scapy.layers.inet import IP
+from typing import List, Optional
+import random
+import time
+
 def extract_intervals_from_pcap(pcap_path):
     """
     Extract inter-packet intervals from a benign PCAP file.
@@ -15,7 +20,6 @@ def generate_timestamps(num_packets, intervals, start_time=None):
     """
     Generate a list of timestamps for attack packets using sampled intervals.
     """
-    import random
     if not intervals:
         # Fallback: use 0.1s interval if none found
         intervals = [0.1]
@@ -33,7 +37,6 @@ def extract_macs_from_pcap(pcap_path, victim_ip: Optional[str] = None, gateway_i
     victim_ip and gateway_ip. Returns (victim_mac, gateway_mac) or (None, None)
     when not found.
     """
-    from scapy.layers.inet import IP
     packets = rdpcap(pcap_path)
     victim_mac = None
     gateway_mac = None
@@ -78,7 +81,6 @@ def make_mac_with_oui(oui: str) -> str:
 
 def extract_ips_from_pcap(pcap_path):
     """Return a list of unique IPv4 addresses seen in the pcap (src and dst)."""
-    from scapy.layers.inet import IP
     packets = rdpcap(pcap_path)
     ips = []
     for pkt in packets:
@@ -93,14 +95,10 @@ def extract_ips_from_pcap(pcap_path):
             if d not in ips:
                 ips.append(d)
     return ips
-from typing import List, Optional
-import random
-import time
 
 
 class ARPSpoofGenerator:
     """Generator for creating ARP spoofing attack traffic"""
-    
     def __init__(self, 
                  victim_ip: str,
                  victim_mac: str,
@@ -131,9 +129,9 @@ class ARPSpoofGenerator:
         return ':'.join([f"{x:02x}" for x in mac])
     
     def generate_spoof_packets(self, 
-                             num_packets: int = 10,
-                             interval_seconds: float = 1.0,
-                             start_time: Optional[float] = None) -> List[Ether]:
+         num_packets: int = 10,
+         interval_seconds: float = 1.0,
+         start_time: Optional[float] = None) -> List[Ether]:
         """
         Generate a sequence of ARP packets including:
         1. Initial legitimate ARP traffic
@@ -281,76 +279,65 @@ class ARPSpoofGenerator:
         wrpcap(filepath, packets)
 
 def main():
-    """Example usage of the ARP spoof generator with user input and realistic timing"""
+    """Generate an ARP spoofing PCAP using IPs, MACs and timing strictly taken from a benign PCAP.
+
+    Behavior:
+    - The benign PCAP path is required. The script extracts at least two IPs (victim and gateway),
+      the corresponding MAC addresses, and the inter-packet timing. If any of these cannot be
+      extracted the script fails with an error.
+    - The generated PCAP will use those IPs and MACs and realistic timestamps based on the
+      benign PCAP.
+    """
     try:
-        victim_ip = input("Enter the target IP address (or type 'auto' to pick from benign pcap): ").strip()
-        victim_mac = "00:11:22:33:44:55"
-        gateway_ip = "192.168.1.1"
-        gateway_mac = "66:77:88:99:aa:bb"
-        print("\nNetwork setup:")
-        print(f"Target IP: {victim_ip}")
-        print(f"Gateway: {gateway_ip}")
+        benign_pcap_path = input("Enter path to benign PCAP (required): ").strip()
+        if not benign_pcap_path:
+            print("Error: benign PCAP path is required")
+            return
+
+        # Extract IPs from benign pcap
+        ips = extract_ips_from_pcap(benign_pcap_path)
+        if len(ips) < 2:
+            print("Error: benign PCAP must contain at least two distinct IP addresses")
+            return
+        victim_ip = ips[0]
+        gateway_ip = ips[1]
+
+        # Extract MACs for the selected IPs
+        victim_mac, gateway_mac = extract_macs_from_pcap(benign_pcap_path, victim_ip=victim_ip, gateway_ip=gateway_ip)
+        if not victim_mac or not gateway_mac:
+            print("Error: could not extract both victim and gateway MAC addresses from benign PCAP")
+            return
+
+        # Prepare generator with values taken from benign pcap
         generator = ARPSpoofGenerator(
             victim_ip=victim_ip,
             victim_mac=victim_mac,
             gateway_ip=gateway_ip,
             gateway_mac=gateway_mac
         )
-        # Ask user for benign PCAP path
-        benign_pcap_path = input("Enter path to benign PCAP for timing (or leave blank to skip): ").strip()
-        # If user didn't provide a victim IP and didn't provide a benign pcap, we can't continue
-        if not victim_ip and not benign_pcap_path:
-            print("Error: no victim IP provided and no benign pcap to auto-select from")
+
+        # Generate a plausible attacker MAC that shares the gateway OUI but does not collide
+        oui = ':'.join(gateway_mac.split(':')[:3])
+        attacker_mac_candidate = make_mac_with_oui(oui)
+        for _ in range(5):
+            if attacker_mac_candidate not in (victim_mac, gateway_mac):
+                break
+            attacker_mac_candidate = make_mac_with_oui(oui)
+        if attacker_mac_candidate in (victim_mac, gateway_mac):
+            print("Error: failed to create non-colliding attacker MAC")
             return
+        generator.attacker_mac = attacker_mac_candidate
+
         output_file = "arp_spoof_attack.pcap"
-        if benign_pcap_path:
-            # If user asked for automatic victim selection, pick an IP from the benign pcap
-            try:
-                if victim_ip.lower() in ('', 'auto'):
-                    ips = extract_ips_from_pcap(benign_pcap_path)
-                    if ips:
-                        victim_ip = ips[0]
-                        print(f"Auto-selected victim IP from benign pcap: {victim_ip}")
-                        # update generator's victim IP
-                        generator.victim_ip = victim_ip
-            except Exception:
-                pass
+        # Create and save the attack pcap using benign timing and addresses
+        generator.save_pcap_with_realistic_timing(
+            filepath=output_file,
+            benign_pcap_path=benign_pcap_path,
+            num_packets=20
+        )
 
-            # Try to extract MACs from the benign pcap to make the attack more realistic
-            try:
-                found_victim_mac, found_gateway_mac = extract_macs_from_pcap(benign_pcap_path, victim_ip=victim_ip, gateway_ip=gateway_ip)
-                if found_victim_mac:
-                    generator.victim_mac = found_victim_mac
-                    print(f"Using victim MAC from benign pcap: {found_victim_mac}")
-                if found_gateway_mac:
-                    generator.gateway_mac = found_gateway_mac
-                    print(f"Using gateway MAC from benign pcap: {found_gateway_mac}")
-                # Make attacker MAC share OUI with gateway for plausibility (but not identical)
-                if found_gateway_mac:
-                    oui = ':'.join(found_gateway_mac.split(':')[:3])
-                    attacker_mac_candidate = make_mac_with_oui(oui)
-                    # Ensure attacker MAC does not collide
-                    while attacker_mac_candidate in (generator.victim_mac, generator.gateway_mac):
-                        attacker_mac_candidate = make_mac_with_oui(oui)
-                    generator.attacker_mac = attacker_mac_candidate
-                    print(f"Generated attacker MAC with gateway OUI: {generator.attacker_mac}")
-            except Exception as e:
-                print(f"Warning: failed to extract MACs from benign pcap: {e}")
-
-            generator.save_pcap_with_realistic_timing(
-                filepath=output_file,
-                benign_pcap_path=benign_pcap_path,
-                num_packets=20
-            )
-            print(f"Generated ARP spoofing PCAP with realistic timing: {output_file}")
-        else:
-            generator.save_pcap(
-                filepath=output_file,
-                num_packets=20,
-                interval_seconds=0.5
-            )
-            print(f"Generated ARP spoofing PCAP: {output_file}")
-        print(f"Attack simulation:")
+        print("Generated ARP spoofing PCAP with realistic timing:", output_file)
+        print("Attack simulation:")
         print(f"- Attacker MAC: {generator.attacker_mac}")
         print(f"- Victim: {victim_ip} ({victim_mac})")
         print(f"- Gateway: {gateway_ip} ({gateway_mac})")
@@ -358,7 +345,7 @@ def main():
         print("\nOperation cancelled by user")
         return
     except Exception as e:
-        print(f"Error: {str(e)}")
+        print(f"Error: {e}")
         return
     
 if __name__ == "__main__":
