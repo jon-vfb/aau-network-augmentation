@@ -171,7 +171,7 @@ class CursesLayout:
         
         menu_options = [
             "1. View Netflows",
-            "2. Augmentations (Coming Soon)",
+            "2. Augmentations",
             "3. Back to PCAP List"
         ]
         
@@ -638,6 +638,37 @@ class CursesLayout:
     def refresh(self):
         """Refresh the screen"""
         self.stdscr.refresh()
+    
+    def draw_menu(self, menu_items: List[str], selected_index: int, title: str = ""):
+        """Draw a simple menu with selectable items"""
+        height, width = self.stdscr.getmaxyx()
+        menu_start_y = height // 2 - len(menu_items) // 2
+        
+        if title:
+            self.stdscr.addstr(menu_start_y - 2, 4, title, self.get_color_pair(1) | curses.A_BOLD)
+        
+        for i, item in enumerate(menu_items):
+            y_pos = menu_start_y + i
+            
+            if i == selected_index:
+                attr = self.get_color_pair(6) | curses.A_REVERSE
+                prefix = "> "
+            else:
+                attr = self.get_color_pair(7)
+                prefix = "  "
+            
+            display_text = f"{prefix}{item}"
+            self.stdscr.addstr(y_pos, 4, display_text[:width-6], attr)
+    
+    def draw_text_box(self, text: str, y_start: int = 2, x_start: int = 2):
+        """Draw a text box with the given text"""
+        height, width = self.stdscr.getmaxyx()
+        
+        lines = text.split('\n')
+        for i, line in enumerate(lines):
+            y_pos = y_start + i
+            if y_pos < height - 2:
+                self.stdscr.addstr(y_pos, x_start, line[:width-x_start-2], self.get_color_pair(7))
 
 
 # Import os for the layout class
