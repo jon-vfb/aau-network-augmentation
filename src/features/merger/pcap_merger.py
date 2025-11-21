@@ -11,6 +11,7 @@ import time
 import ipaddress
 from typing import List, Dict, Optional, Tuple, Set
 import sys
+import pandas as pd
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from classes.pcapparser import pcapparser
 
@@ -36,7 +37,119 @@ class PcapMerger:
         self.ip_translation_range = None
         self.ip_mapping = {}  # Store IP translations
         self.used_ips = set()  # Track all used IPs
+        self.left_labels = None  # DataFrame for left labels
+        self.right_labels = None  # DataFrame for right labels
+        self.left_time_offset = None  # Track time mapping for left PCAP
+        self.right_time_offset = None  # Track time mapping for right PCAP
+        self.packet_source_map = {}  # Map packet index to source ('left' or 'right')
         
+    def _adjust_labels_for_merged_packets(self, merged_packets: List[Tuple[float, any]], output_labels_path: Optional[str] = None) -> Optional[pd.DataFrame]:
+        """
+        Create output labels DataFrame by transforming input labels according to IP and timestamp changes.
+        
+        Args:
+            merged_packets: List of (timestamp, packet) tuples in chronological order
+            output_labels_path: Optional path to save the output labels CSV
+            
+        Returns:
+            Optional[pd.DataFrame]: Merged labels DataFrame, or None if no labels were provided
+        """
+        if self.left_labels is None and self.right_labels is None:
+            return None
+        
+        merged_labels = []
+        left_packets = self.left_parser.get_packets()
+        right_packets = self.right_parser.get_packets()
+        
+        # Get time ranges for mapping
+        left_timestamps = [float(pkt.time) for pkt in left_packets]
+        right_timestamps = [float(pkt.time) for pkt in right_packets]
+        
+        left_start = min(left_timestamps) if left_timestamps else 0
+        left_end = max(left_timestamps) if left_timestamps else 0
+        left_duration = left_end - left_start if left_start != left_end else 1
+        
+        right_start = min(right_timestamps) if right_timestamps else 0
+        right_end = max(right_timestamps) if right_timestamps else 0
+        right_duration = right_end - right_start if right_start != right_end else 1
+        
+        merged_output_start = min(ts for ts, _ in merged_packets)
+        
+        # Process each merged packet
+        for output_idx, (new_timestamp, pkt) in enumerate(merged_packets):
+            # Find corresponding label and source
+            label_row = None
+            source = None
+            
+            # Try to find matching packet in original sequences
+            for orig_idx, orig_pkt in enumerate(left_packets):
+                if orig_pkt is pkt:
+                    source = 'left'
+                    if self.left_labels is not None and orig_idx < len(self.left_labels):
+                        label_row = self.left_labels.iloc[orig_idx].copy()
+                    break
+            
+            if source is None:
+                for orig_idx, orig_pkt in enumerate(right_packets):
+                    # Need to check if packet matches (compare content, not identity)
+                    if self._packets_match(orig_pkt, pkt):
+                        source = 'right'
+                        if self.right_labels is not None and orig_idx < len(self.right_labels):
+                            label_row = self.right_labels.iloc[orig_idx].copy()
+                        break
+            
+            # Create output label entry
+            if label_row is not None:
+                label_row = dict(label_row)
+            else:
+                label_row = {}
+            
+            # Update timestamp
+            label_row['timestamp'] = new_timestamp
+            label_row['index'] = output_idx
+            label_row['source'] = source
+            
+            # Update IP addresses if packet has IP layer and was translated
+            if pkt.haslayer(IP):
+                label_row['source_ip'] = pkt[IP].src
+                label_row['destination_ip'] = pkt[IP].dst
+            
+            merged_labels.append(label_row)
+        
+        # Create DataFrame and save if output path provided
+        output_df = pd.DataFrame(merged_labels)
+        
+        if output_labels_path:
+            output_df.to_csv(output_labels_path, index=False)
+            print(f"Merged labels exported to {output_labels_path}")
+        
+        return output_df
+    
+    def _packets_match(self, pkt1, pkt2) -> bool:
+        """
+        Check if two packets match based on content (after transformations).
+        Simplified matching based on layer presence and basic fields.
+        
+        Args:
+            pkt1: First packet
+            pkt2: Second packet
+            
+        Returns:
+            bool: Whether packets match
+        """
+        # Simple heuristic: compare packet length and layer types
+        try:
+            if len(pkt1) != len(pkt2):
+                return False
+            
+            # Compare layer types
+            if pkt1.layers() != pkt2.layers():
+                return False
+            
+            return True
+        except:
+            return False
+
     def set_ip_translation_range(self, ip_range: str) -> bool:
         """
         Set the IP range for translating malicious traffic IPs.
@@ -54,13 +167,15 @@ class PcapMerger:
             print(f"Error setting IP translation range: {e}")
             return False
             
-    def load_pcaps(self, left_pcap: str, right_pcap: str) -> bool:
+    def load_pcaps(self, left_pcap: str, right_pcap: str, left_labels: Optional[str] = None, right_labels: Optional[str] = None) -> bool:
         """
-        Load both PCAP files.
+        Load both PCAP files and optional label CSV files.
         
         Args:
             left_pcap (str): Path to left PCAP file
             right_pcap (str): Path to right PCAP file
+            left_labels (str, optional): Path to left labels CSV file
+            right_labels (str, optional): Path to right labels CSV file
             
         Returns:
             bool: Success status
@@ -79,6 +194,23 @@ class PcapMerger:
             if not right_packets:
                 print(f"Error: No packets found in right PCAP: {right_pcap}")
                 return False
+            
+            # Load labels if provided
+            if left_labels and os.path.exists(left_labels):
+                try:
+                    self.left_labels = pd.read_csv(left_labels)
+                    print(f"Loaded {len(self.left_labels)} labels from left CSV: {left_labels}")
+                except Exception as e:
+                    print(f"Warning: Could not load left labels: {e}")
+                    self.left_labels = None
+            
+            if right_labels and os.path.exists(right_labels):
+                try:
+                    self.right_labels = pd.read_csv(right_labels)
+                    print(f"Loaded {len(self.right_labels)} labels from right CSV: {right_labels}")
+                except Exception as e:
+                    print(f"Warning: Could not load right labels: {e}")
+                    self.right_labels = None
                 
             # Initialize used IPs set with IPs from both PCAPs
             self._collect_used_ips()
@@ -91,12 +223,14 @@ class PcapMerger:
             print(f"Error loading PCAP files: {e}")
             return False
             
-    def merge(self, output_path: str) -> bool:
+    def merge(self, output_path: str, output_labels_path: Optional[str] = None) -> bool:
         """
         Merge the loaded PCAP files with IP translation for malicious traffic.
+        Optionally generates merged labels CSV if input labels were provided.
         
         Args:
             output_path (str): Path for the merged output file
+            output_labels_path (str, optional): Path for merged output labels CSV
             
         Returns:
             bool: Success status
@@ -127,16 +261,18 @@ class PcapMerger:
             right_duration = right_end - right_start
             
             merged_packets = []
+            packet_mapping = []  # Track (output_idx, source_idx, source_type)
             
             # Add all left (benign) packets with their original timestamps - keep intact
             print(f"Adding {len(left_packets)} benign packets with original timestamps")
-            for pkt in left_packets:
+            for idx, pkt in enumerate(left_packets):
                 merged_packets.append((float(pkt.time), pkt))
+                packet_mapping.append((len(merged_packets) - 1, idx, 'left'))
             
             # Process right (malicious) packets - map them into the benign timeline
             print(f"Mapping {len(right_packets)} malicious packets into benign timeline")
             
-            for pkt in right_packets:
+            for idx, pkt in enumerate(right_packets):
                 # Create a copy of the packet for modification
                 new_pkt = pkt.copy()
                 
@@ -184,9 +320,18 @@ class PcapMerger:
                 # Update the packet's timestamp
                 new_pkt.time = new_timestamp
                 merged_packets.append((new_timestamp, new_pkt))
+                packet_mapping.append((len(merged_packets) - 1, idx, 'right'))
             
             # Sort all packets by timestamp to ensure proper chronological order
             merged_packets.sort(key=lambda x: x[0])
+            
+            # Update mapping indices after sorting
+            sorted_mapping = [None] * len(merged_packets)
+            for output_idx, (_, pkt) in enumerate(merged_packets):
+                for map_idx, (orig_output_idx, src_idx, src_type) in enumerate(packet_mapping):
+                    if orig_output_idx == map_idx:
+                        sorted_mapping[output_idx] = (src_idx, src_type)
+                        break
             
             # Resolve timestamp overlaps to ensure realistic timing
             print("Resolving timestamp overlaps...")
@@ -201,6 +346,13 @@ class PcapMerger:
             
             wrpcap(output_path, final_packets)
             print(f"Successfully merged {len(final_packets)} packets in chronological order")
+            
+            # Generate merged labels if input labels were provided
+            if self.left_labels is not None or self.right_labels is not None:
+                output_labels = self._adjust_labels_for_merged_packets(resolved_packets, output_labels_path)
+                if output_labels is not None:
+                    print(f"Generated merged labels with {len(output_labels)} records")
+            
             return True
             
         except Exception as e:
@@ -368,7 +520,9 @@ class PcapMerger:
             
         return flows
         
-    def merge_pcaps(self, left_pcap: str, right_pcap: str, output_file: str) -> bool:
+    def merge_pcaps(self, left_pcap: str, right_pcap: str, output_file: str, 
+                    left_labels: Optional[str] = None, right_labels: Optional[str] = None,
+                    output_labels: Optional[str] = None) -> bool:
         """
         Convenience method to load and merge PCAP files in one call.
         
@@ -376,14 +530,17 @@ class PcapMerger:
             left_pcap (str): Path to left PCAP file
             right_pcap (str): Path to right PCAP file
             output_file (str): Path for output merged PCAP file
+            left_labels (str, optional): Path to left labels CSV file
+            right_labels (str, optional): Path to right labels CSV file
+            output_labels (str, optional): Path for output merged labels CSV file
             
         Returns:
             bool: Success status
         """
-        if not self.load_pcaps(left_pcap, right_pcap):
+        if not self.load_pcaps(left_pcap, right_pcap, left_labels, right_labels):
             return False
         
-        return self.merge(output_file)
+        return self.merge(output_file, output_labels)
 
     def get_merge_statistics(self) -> Dict:
         """

@@ -51,7 +51,7 @@ class MergeAugmentation:
         1. Label benign pcap as benign (save CSV)
         2. Label malicious pcap as malicious (save CSV)
         3. Merge both pcaps with optional IP translation and jitter
-        4. Save merged pcap to output directory
+        4. Generate merged pcap and merged label CSV with IP/timestamp tracking
         
         Args:
             benign_pcap (str): Path to benign pcap file
@@ -71,6 +71,7 @@ class MergeAugmentation:
             "benign_csv": None,
             "malicious_csv": None,
             "merged_pcap": None,
+            "merged_csv": None,
             "messages": []
         }
         
@@ -105,6 +106,7 @@ class MergeAugmentation:
         
         # Step 3: Merge pcaps
         merged_pcap = os.path.join(self.output_dir, f"{self.project_name}_merged.pcapng")
+        merged_csv = os.path.join(self.output_dir, f"{self.project_name}_merged_labels.csv")
         
         try:
             # Configure merger with jitter
@@ -117,17 +119,21 @@ class MergeAugmentation:
                 else:
                     results["messages"].append(f"✓ Set IP translation range: {ip_translation_range}")
             
-            # Load and merge pcaps
-            if not merger.load_pcaps(benign_pcap, malicious_pcap):
+            # Load and merge pcaps WITH label tracking
+            # The benign_csv and malicious_csv generated above are now inputs to the merger
+            if not merger.load_pcaps(benign_pcap, malicious_pcap, benign_csv, malicious_csv):
                 results["messages"].append("✗ Failed to load pcap files for merging")
                 return results
             
-            if not merger.merge(merged_pcap):
+            # Merge and generate merged labels CSV
+            if not merger.merge(merged_pcap, merged_csv):
                 results["messages"].append("✗ Failed to merge pcap files")
                 return results
             
             results["merged_pcap"] = merged_pcap
+            results["merged_csv"] = merged_csv
             results["messages"].append(f"✓ Merged pcaps: {merged_pcap}")
+            results["messages"].append(f"✓ Generated merged labels: {merged_csv}")
             
             # Get and report merge statistics
             stats = merger.get_merge_statistics()
@@ -155,9 +161,10 @@ class MergeAugmentation:
         
         if results["success"]:
             print(f"\nProject Directory: {results['project_dir']}")
-            print(f"Benign CSV: {results['benign_csv']}")
-            print(f"Malicious CSV: {results['malicious_csv']}")
+            print(f"Benign CSV (input): {results['benign_csv']}")
+            print(f"Malicious CSV (input): {results['malicious_csv']}")
             print(f"Merged PCAP: {results['merged_pcap']}")
+            print(f"Merged CSV (output): {results['merged_csv']}")
         
         print(f"{'='*80}\n")
 
