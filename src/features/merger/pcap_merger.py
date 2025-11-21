@@ -8,8 +8,10 @@ from scapy.packet import Raw
 import os
 import random
 import time
-from typing import List, Dict, Optional, Tuple
+import ipaddress
+from typing import List, Dict, Optional, Tuple, Set
 import sys
+import pandas as pd
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from classes.pcapparser import pcapparser
 
@@ -32,14 +34,148 @@ class PcapMerger:
         self.jitter_max = jitter_max
         self.left_parser = None
         self.right_parser = None
+        self.ip_translation_range = None
+        self.ip_mapping = {}  # Store IP translations
+        self.used_ips = set()  # Track all used IPs
+        self.left_labels = None  # DataFrame for left labels
+        self.right_labels = None  # DataFrame for right labels
+        self.left_time_offset = None  # Track time mapping for left PCAP
+        self.right_time_offset = None  # Track time mapping for right PCAP
+        self.packet_source_map = {}  # Map packet index to source ('left' or 'right')
         
-    def load_pcaps(self, left_pcap: str, right_pcap: str) -> bool:
+    def _adjust_labels_for_merged_packets(self, merged_packets: List[Tuple[float, any]], output_labels_path: Optional[str] = None) -> Optional[pd.DataFrame]:
         """
-        Load both PCAP files.
+        Create output labels DataFrame by transforming input labels according to IP and timestamp changes.
+        
+        Args:
+            merged_packets: List of (timestamp, packet) tuples in chronological order
+            output_labels_path: Optional path to save the output labels CSV
+            
+        Returns:
+            Optional[pd.DataFrame]: Merged labels DataFrame, or None if no labels were provided
+        """
+        if self.left_labels is None and self.right_labels is None:
+            return None
+        
+        merged_labels = []
+        left_packets = self.left_parser.get_packets()
+        right_packets = self.right_parser.get_packets()
+        
+        # Get time ranges for mapping
+        left_timestamps = [float(pkt.time) for pkt in left_packets]
+        right_timestamps = [float(pkt.time) for pkt in right_packets]
+        
+        left_start = min(left_timestamps) if left_timestamps else 0
+        left_end = max(left_timestamps) if left_timestamps else 0
+        left_duration = left_end - left_start if left_start != left_end else 1
+        
+        right_start = min(right_timestamps) if right_timestamps else 0
+        right_end = max(right_timestamps) if right_timestamps else 0
+        right_duration = right_end - right_start if right_start != right_end else 1
+        
+        merged_output_start = min(ts for ts, _ in merged_packets)
+        
+        # Process each merged packet
+        for output_idx, (new_timestamp, pkt) in enumerate(merged_packets):
+            # Find corresponding label and source
+            label_row = None
+            source = None
+            
+            # Try to find matching packet in original sequences
+            for orig_idx, orig_pkt in enumerate(left_packets):
+                if orig_pkt is pkt:
+                    source = 'left'
+                    if self.left_labels is not None and orig_idx < len(self.left_labels):
+                        label_row = self.left_labels.iloc[orig_idx].copy()
+                    break
+            
+            if source is None:
+                for orig_idx, orig_pkt in enumerate(right_packets):
+                    # Need to check if packet matches (compare content, not identity)
+                    if self._packets_match(orig_pkt, pkt):
+                        source = 'right'
+                        if self.right_labels is not None and orig_idx < len(self.right_labels):
+                            label_row = self.right_labels.iloc[orig_idx].copy()
+                        break
+            
+            # Create output label entry
+            if label_row is not None:
+                label_row = dict(label_row)
+            else:
+                label_row = {}
+            
+            # Update timestamp
+            label_row['timestamp'] = new_timestamp
+            label_row['index'] = output_idx
+            label_row['source'] = source
+            
+            # Update IP addresses if packet has IP layer and was translated
+            if pkt.haslayer(IP):
+                label_row['source_ip'] = pkt[IP].src
+                label_row['destination_ip'] = pkt[IP].dst
+            
+            merged_labels.append(label_row)
+        
+        # Create DataFrame and save if output path provided
+        output_df = pd.DataFrame(merged_labels)
+        
+        if output_labels_path:
+            output_df.to_csv(output_labels_path, index=False)
+            print(f"Merged labels exported to {output_labels_path}")
+        
+        return output_df
+    
+    def _packets_match(self, pkt1, pkt2) -> bool:
+        """
+        Check if two packets match based on content (after transformations).
+        Simplified matching based on layer presence and basic fields.
+        
+        Args:
+            pkt1: First packet
+            pkt2: Second packet
+            
+        Returns:
+            bool: Whether packets match
+        """
+        # Simple heuristic: compare packet length and layer types
+        try:
+            if len(pkt1) != len(pkt2):
+                return False
+            
+            # Compare layer types
+            if pkt1.layers() != pkt2.layers():
+                return False
+            
+            return True
+        except:
+            return False
+
+    def set_ip_translation_range(self, ip_range: str) -> bool:
+        """
+        Set the IP range for translating malicious traffic IPs.
+        
+        Args:
+            ip_range (str): CIDR notation for IP range (e.g., '192.168.100.0/24')
+            
+        Returns:
+            bool: Success status
+        """
+        try:
+            self.ip_translation_range = ipaddress.ip_network(ip_range)
+            return True
+        except ValueError as e:
+            print(f"Error setting IP translation range: {e}")
+            return False
+            
+    def load_pcaps(self, left_pcap: str, right_pcap: str, left_labels: Optional[str] = None, right_labels: Optional[str] = None) -> bool:
+        """
+        Load both PCAP files and optional label CSV files.
         
         Args:
             left_pcap (str): Path to left PCAP file
             right_pcap (str): Path to right PCAP file
+            left_labels (str, optional): Path to left labels CSV file
+            right_labels (str, optional): Path to right labels CSV file
             
         Returns:
             bool: Success status
@@ -58,6 +194,26 @@ class PcapMerger:
             if not right_packets:
                 print(f"Error: No packets found in right PCAP: {right_pcap}")
                 return False
+            
+            # Load labels if provided
+            if left_labels and os.path.exists(left_labels):
+                try:
+                    self.left_labels = pd.read_csv(left_labels)
+                    print(f"Loaded {len(self.left_labels)} labels from left CSV: {left_labels}")
+                except Exception as e:
+                    print(f"Warning: Could not load left labels: {e}")
+                    self.left_labels = None
+            
+            if right_labels and os.path.exists(right_labels):
+                try:
+                    self.right_labels = pd.read_csv(right_labels)
+                    print(f"Loaded {len(self.right_labels)} labels from right CSV: {right_labels}")
+                except Exception as e:
+                    print(f"Warning: Could not load right labels: {e}")
+                    self.right_labels = None
+                
+            # Initialize used IPs set with IPs from both PCAPs
+            self._collect_used_ips()
                 
             print(f"Loaded {len(left_packets)} packets from left PCAP")
             print(f"Loaded {len(right_packets)} packets from right PCAP")
@@ -66,7 +222,185 @@ class PcapMerger:
         except Exception as e:
             print(f"Error loading PCAP files: {e}")
             return False
-    
+            
+    def merge(self, output_path: str, output_labels_path: Optional[str] = None) -> bool:
+        """
+        Merge the loaded PCAP files with IP translation for malicious traffic.
+        Optionally generates merged labels CSV if input labels were provided.
+        
+        Args:
+            output_path (str): Path for the merged output file
+            output_labels_path (str, optional): Path for merged output labels CSV
+            
+        Returns:
+            bool: Success status
+        """
+        if not self.left_parser or not self.right_parser:
+            print("Error: PCAP files not loaded")
+            return False
+            
+        try:
+            # Get all packets including non-IP packets
+            left_packets = self.left_parser.get_packets()
+            right_packets = self.right_parser.get_packets()
+            
+            if not left_packets or not right_packets:
+                print("Error: No packets found in one or both PCAP files")
+                return False
+            
+            # Calculate time ranges for both captures
+            left_timestamps = [float(pkt.time) for pkt in left_packets]
+            right_timestamps = [float(pkt.time) for pkt in right_packets]
+            
+            left_start = min(left_timestamps)
+            left_end = max(left_timestamps)
+            left_duration = left_end - left_start
+            
+            right_start = min(right_timestamps)
+            right_end = max(right_timestamps)
+            right_duration = right_end - right_start
+            
+            merged_packets = []
+            packet_mapping = []  # Track (output_idx, source_idx, source_type)
+            
+            # Add all left (benign) packets with their original timestamps - keep intact
+            print(f"Adding {len(left_packets)} benign packets with original timestamps")
+            for idx, pkt in enumerate(left_packets):
+                merged_packets.append((float(pkt.time), pkt))
+                packet_mapping.append((len(merged_packets) - 1, idx, 'left'))
+            
+            # Process right (malicious) packets - map them into the benign timeline
+            print(f"Mapping {len(right_packets)} malicious packets into benign timeline")
+            
+            for idx, pkt in enumerate(right_packets):
+                # Create a copy of the packet for modification
+                new_pkt = pkt.copy()
+                
+                # Apply IP translation if packet has IP layer and range is set
+                if self.ip_translation_range and new_pkt.haslayer(IP):
+                    original_src = new_pkt[IP].src
+                    original_dst = new_pkt[IP].dst
+                    
+                    # Get translated IPs
+                    new_src_ip = self._get_next_available_ip(original_src)
+                    new_dst_ip = self._get_next_available_ip(original_dst)
+                    
+                    # Only translate if we successfully got new IPs
+                    if new_src_ip and new_dst_ip:
+                        new_pkt[IP].src = new_src_ip
+                        new_pkt[IP].dst = new_dst_ip
+                        # Delete checksums to force recalculation
+                        del new_pkt[IP].chksum
+                        if new_pkt.haslayer(TCP):
+                            del new_pkt[TCP].chksum
+                        elif new_pkt.haslayer(UDP):
+                            del new_pkt[UDP].chksum
+                    else:
+                        print(f"Warning: Could not allocate new IPs for {original_src}->{original_dst}, keeping original IPs")
+                
+                # Map the malicious packet timestamp into the benign timeline
+                # Calculate the relative position of this packet in the original malicious capture
+                if right_duration > 0:
+                    relative_position = (float(pkt.time) - right_start) / right_duration
+                else:
+                    relative_position = 0.5  # If single packet, place it in the middle
+                
+                # Map this position into the benign timeline (constrain to benign bounds)
+                new_timestamp = left_start + (relative_position * left_duration)
+                
+                # Apply jitter if enabled (only to malicious packets)
+                if self.jitter_max > 0:
+                    jitter_range = min(self.jitter_max, left_duration * 0.01)  # Max 1% of total duration
+                    jitter = random.uniform(-jitter_range, jitter_range)
+                    new_timestamp += jitter
+                
+                # Ensure timestamp stays strictly within benign timeline bounds
+                new_timestamp = max(left_start, min(left_end, new_timestamp))
+                
+                # Update the packet's timestamp
+                new_pkt.time = new_timestamp
+                merged_packets.append((new_timestamp, new_pkt))
+                packet_mapping.append((len(merged_packets) - 1, idx, 'right'))
+            
+            # Sort all packets by timestamp to ensure proper chronological order
+            merged_packets.sort(key=lambda x: x[0])
+            
+            # Update mapping indices after sorting
+            sorted_mapping = [None] * len(merged_packets)
+            for output_idx, (_, pkt) in enumerate(merged_packets):
+                for map_idx, (orig_output_idx, src_idx, src_type) in enumerate(packet_mapping):
+                    if orig_output_idx == map_idx:
+                        sorted_mapping[output_idx] = (src_idx, src_type)
+                        break
+            
+            # Resolve timestamp overlaps to ensure realistic timing
+            print("Resolving timestamp overlaps...")
+            resolved_packets = self._resolve_timestamp_overlaps(merged_packets)
+            
+            # Write merged PCAP with packets in chronological order
+            # Update packet timestamps to ensure they're properly set
+            final_packets = []
+            for timestamp, pkt in resolved_packets:
+                pkt.time = timestamp
+                final_packets.append(pkt)
+            
+            wrpcap(output_path, final_packets)
+            print(f"Successfully merged {len(final_packets)} packets in chronological order")
+            
+            # Generate merged labels if input labels were provided
+            if self.left_labels is not None or self.right_labels is not None:
+                output_labels = self._adjust_labels_for_merged_packets(resolved_packets, output_labels_path)
+                if output_labels is not None:
+                    print(f"Generated merged labels with {len(output_labels)} records")
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error during merge: {e}")
+            return False
+            
+    def _collect_used_ips(self):
+        """Collect all used IP addresses from both PCAP files."""
+        self.used_ips.clear()
+        
+        # Collect IPs from left PCAP
+        for pkt in self.left_parser.get_packets():
+            if pkt.haslayer(IP):
+                self.used_ips.add(pkt[IP].src)
+                self.used_ips.add(pkt[IP].dst)
+                
+        # Collect original IPs from right PCAP (before translation)
+        for pkt in self.right_parser.get_packets():
+            if pkt.haslayer(IP):
+                self.used_ips.add(pkt[IP].src)
+                self.used_ips.add(pkt[IP].dst)
+                
+    def _get_next_available_ip(self, original_ip: str) -> Optional[str]:
+        """
+        Get the next available IP from the translation range.
+        
+        Args:
+            original_ip (str): Original IP to translate
+            
+        Returns:
+            Optional[str]: New IP address or None if no IPs available
+        """
+        if original_ip in self.ip_mapping:
+            return self.ip_mapping[original_ip]
+            
+        if not self.ip_translation_range:
+            return None
+            
+        # Try to find an available IP in the translation range
+        for ip in self.ip_translation_range.hosts():
+            ip_str = str(ip)
+            if ip_str not in self.used_ips:
+                self.ip_mapping[original_ip] = ip_str
+                self.used_ips.add(ip_str)
+                return ip_str
+                
+        return None
+        
     def _apply_jitter(self, delta: float) -> float:
         """
         Apply random jitter to a time delta.
@@ -79,26 +413,70 @@ class PcapMerger:
         """
         if self.jitter_max <= 0:
             return delta
-        
+            
         # Apply jitter as a percentage of the original delta, capped by jitter_max
         jitter_range = min(abs(delta * 0.1), self.jitter_max)
         jitter = random.uniform(-jitter_range, jitter_range)
         return max(0, delta + jitter)  # Ensure positive delta
-    
+        
+    def _resolve_timestamp_overlaps(self, packets_with_timestamps: List[Tuple[float, any]]) -> List[Tuple[float, any]]:
+        """
+        Resolve timestamp overlaps by adding microsecond-level offsets to ensure unique timestamps.
+        This handles both duplicates in original files and those created during merging.
+        
+        Args:
+            packets_with_timestamps: List of (timestamp, packet) tuples (should be pre-sorted)
+            
+        Returns:
+            List of (timestamp, packet) tuples with unique timestamps
+        """
+        if not packets_with_timestamps:
+            return packets_with_timestamps
+            
+        resolved_packets = []
+        overlap_count = 0
+        
+        # Minimum increment in seconds (10 microseconds for better separation)
+        min_increment = 0.00001
+        
+        # Process packets sequentially, ensuring each timestamp is unique and strictly increasing
+        for i, (timestamp, packet) in enumerate(packets_with_timestamps):
+            if i == 0:
+                # First packet keeps its timestamp
+                resolved_packets.append((timestamp, packet))
+            else:
+                prev_timestamp = resolved_packets[-1][0]
+                
+                # Ensure this timestamp is strictly greater than the previous one
+                # If there's any collision or if timestamps are too close, move it forward
+                if timestamp <= prev_timestamp:
+                    # Move to just after the previous timestamp
+                    adjusted_timestamp = prev_timestamp + min_increment
+                    overlap_count += 1
+                else:
+                    adjusted_timestamp = timestamp
+                
+                resolved_packets.append((adjusted_timestamp, packet))
+        
+        if overlap_count > 0:
+            print(f"Resolved {overlap_count} timestamp overlaps with microsecond offsets")
+            
+        return resolved_packets
+        
     def _extract_netflows_with_timing(self, parser: pcapparser) -> Dict[str, Dict]:
         """
-        Extract netflows with detailed timing information using enhanced protocol detection.
+        Extract netflows with detailed timing information.
         
         Args:
             parser (pcapparser): Parser containing loaded packets
             
         Returns:
-            Dict[str, Dict]: Dictionary of netflows with timing data and protocol information
+            Dict[str, Dict]: Dictionary of netflows with timing data
         """
-        packets = parser.get_packets()
         flows = {}
+        packets = parser.get_packets()
         
-        for i, pkt in enumerate(packets):
+        for pkt in packets:
             if not pkt.haslayer(IP):
                 continue
                 
@@ -106,7 +484,6 @@ class PcapMerger:
             flow_key = None
             protocol = None
             src_port = dst_port = 0
-            application_protocol = None
             
             # Extract transport protocol and ports
             if pkt.haslayer(TCP):
@@ -123,338 +500,29 @@ class PcapMerger:
             else:
                 protocol = str(ip_layer.proto)
                 src_port = dst_port = 0
-            
-            # Detect application protocol using configuration
-            if src_port != 0 and dst_port != 0:
-                application_protocol = self._detect_application_protocol(src_port, dst_port, protocol, pkt)
-            
-            # Create unidirectional flow key to preserve separate flows
-            flow_identifier = application_protocol if application_protocol else protocol
-            flow_key = f"{ip_layer.src}:{src_port}->{ip_layer.dst}:{dst_port}-{flow_identifier}"
+                
+            # Create unidirectional flow key
+            flow_key = f"{ip_layer.src}:{src_port}->{ip_layer.dst}:{dst_port}-{protocol}"
             
             if flow_key not in flows:
                 flows[flow_key] = {
                     'packets': [],
                     'timestamps': [],
-                    'transport_protocol': protocol,
-                    'application_protocol': application_protocol,
                     'src_ip': ip_layer.src,
                     'src_port': src_port,
                     'dst_ip': ip_layer.dst,
                     'dst_port': dst_port,
-                    'port_category': get_port_category(dst_port) if dst_port != 0 else 'n/a',
-                    'likely_service': self._classify_service_type(src_port, dst_port, application_protocol)
+                    'protocol': protocol
                 }
-            
+                
             flows[flow_key]['packets'].append(pkt)
             flows[flow_key]['timestamps'].append(float(pkt.time))
-        
+            
         return flows
-    
-    def _detect_application_protocol(self, src_port: int, dst_port: int, transport_protocol: str, pkt) -> Optional[str]:
-        """
-        Detect the application protocol using the configuration and packet analysis.
         
-        Args:
-            src_port (int): Source port
-            dst_port (int): Destination port  
-            transport_protocol (str): Transport protocol (TCP/UDP)
-            pkt: Packet object
-            
-        Returns:
-            Optional[str]: Detected application protocol name
-        """
-        # Check destination port first (more reliable for server identification)
-        dst_protocols = get_protocols_for_port(dst_port)
-        if dst_protocols:
-            # Filter by transport protocol
-            for protocol in dst_protocols:
-                protocol_transports = get_protocol_transport(protocol)
-                if transport_protocol in protocol_transports:
-                    # Additional validation for specific protocols
-                    if self._validate_protocol_detection(protocol, pkt):
-                        return protocol
-            # Return first matching protocol if validation not available
-            return dst_protocols[0] if dst_protocols else None
-        
-        # Check source port (for client-side identification)
-        src_protocols = get_protocols_for_port(src_port)
-        if src_protocols:
-            for protocol in src_protocols:
-                protocol_transports = get_protocol_transport(protocol)
-                if transport_protocol in protocol_transports:
-                    if self._validate_protocol_detection(protocol, pkt):
-                        return protocol
-            return src_protocols[0] if src_protocols else None
-        
-        return None
-    
-    def _validate_protocol_detection(self, protocol: str, pkt) -> bool:
-        """
-        Validate protocol detection using payload analysis for certain protocols.
-        
-        Args:
-            protocol (str): Suspected protocol
-            pkt: Packet object
-            
-        Returns:
-            bool: True if validation passes or is not needed
-        """
-        # HTTP validation
-        if protocol in ['HTTP', 'HTTPS'] and pkt.haslayer(Raw):
-            try:
-                payload = str(pkt[Raw].load, 'utf-8', errors='ignore')
-                if any(method in payload for method in ['GET ', 'POST ', 'PUT ', 'DELETE ', 'HTTP/']):
-                    return True
-                # If no HTTP indicators found, it might not be HTTP
-                return False
-            except:
-                pass
-        
-        # DNS validation
-        if protocol == 'DNS' and pkt.haslayer(DNS):
-            return True
-        elif protocol == 'DNS' and not pkt.haslayer(DNS):
-            return False
-        
-        # For other protocols, assume detection is correct
-        return True
-    
-    def _classify_service_type(self, src_port: int, dst_port: int, application_protocol: Optional[str]) -> str:
-        """
-        Classify the type of service based on ports and detected protocol.
-        
-        Args:
-            src_port (int): Source port
-            dst_port (int): Destination port
-            application_protocol (Optional[str]): Detected application protocol
-            
-        Returns:
-            str: Service type classification
-        """
-        if application_protocol:
-            # Map protocols to service types
-            service_mappings = {
-                'web': ['HTTP', 'HTTPS', 'APACHE', 'NGINX'],
-                'database': ['MYSQL', 'POSTGRESQL', 'MSSQL', 'ORACLE', 'MONGODB', 'REDIS'],
-                'email': ['SMTP', 'POP3', 'IMAP'],
-                'file_transfer': ['FTP', 'FTPS', 'SFTP', 'TFTP'],
-                'remote_access': ['SSH', 'TELNET', 'RDP', 'VNC'],
-                'dns': ['DNS'],
-                'voip': ['SIP', 'RTP'],
-                'messaging': ['RABBITMQ', 'KAFKA', 'MQTT'],
-                'monitoring': ['SNMP', 'SYSLOG', 'GRAFANA', 'PROMETHEUS'],
-                'development': ['DJANGO', 'FLASK', 'NODE', 'RAILS']
-            }
-            
-            for service_type, protocols in service_mappings.items():
-                if application_protocol in protocols:
-                    return service_type
-        
-        # Fallback to port-based classification
-        if is_well_known_port(dst_port):
-            return 'well-known-service'
-        elif is_well_known_port(src_port):
-            return 'client-to-service'
-        else:
-            return 'unknown'
-    
-    def _calculate_flow_deltas(self, flow_data: Dict) -> List[float]:
-        """
-        Calculate time deltas between packets in a flow.
-        
-        Args:
-            flow_data (Dict): Flow data containing timestamps
-            
-        Returns:
-            List[float]: List of time deltas
-        """
-        timestamps = flow_data['timestamps']
-        if len(timestamps) <= 1:
-            return []
-        
-        deltas = []
-        for i in range(1, len(timestamps)):
-            delta = timestamps[i] - timestamps[i-1]
-            deltas.append(delta)
-        
-        return deltas
-    
-    def _schedule_flow_packets(self, flow_data: Dict, start_time: float) -> List[Tuple[float, any]]:
-        """
-        Schedule packets from a flow with proper timing and jitter.
-        
-        Args:
-            flow_data (Dict): Flow data with packets and timing
-            start_time (float): When to start this flow
-            
-        Returns:
-            List[Tuple[float, packet]]: List of (timestamp, packet) tuples
-        """
-        packets = flow_data['packets']
-        if not packets:
-            return []
-        
-        scheduled_packets = []
-        current_time = start_time
-        
-        # First packet at start time
-        scheduled_packets.append((current_time, packets[0].copy()))
-        
-        # Calculate deltas and schedule remaining packets
-        deltas = self._calculate_flow_deltas(flow_data)
-        for i, delta in enumerate(deltas):
-            jittered_delta = self._apply_jitter(delta)
-            current_time += jittered_delta
-            
-            # Copy packet and update timestamp
-            pkt_copy = packets[i + 1].copy()
-            scheduled_packets.append((current_time, pkt_copy))
-        
-        return scheduled_packets
-    
-    def _find_insertion_points(self, left_flows: Dict, right_flows: Dict) -> Dict[str, float]:
-        """
-        Find appropriate insertion points for right-side flows into left-side timeline.
-        
-        Args:
-            left_flows (Dict): Left-side netflows
-            right_flows (Dict): Right-side netflows
-            
-        Returns:
-            Dict[str, float]: Mapping of right flow keys to insertion times
-        """
-        insertion_points = {}
-        
-        # Get the time range of left-side traffic
-        all_left_times = []
-        for flow_data in left_flows.values():
-            all_left_times.extend(flow_data['timestamps'])
-        
-        if not all_left_times:
-            # If no left traffic, start right flows at time 0
-            base_time = 0.0
-        else:
-            min_time = min(all_left_times)
-            max_time = max(all_left_times)
-            base_time = min_time
-        
-        # Distribute right flows across the timeline
-        right_flow_keys = list(right_flows.keys())
-        if len(right_flow_keys) == 1:
-            # Single flow - place it at a random point
-            if all_left_times:
-                insertion_points[right_flow_keys[0]] = random.uniform(min_time, max_time)
-            else:
-                insertion_points[right_flow_keys[0]] = 0.0
-        else:
-            # Multiple flows - distribute them
-            if all_left_times:
-                time_span = max_time - min_time
-                for i, flow_key in enumerate(right_flow_keys):
-                    # Distribute evenly with some randomness
-                    progress = i / max(1, len(right_flow_keys) - 1)
-                    base_insertion = min_time + (progress * time_span)
-                    # Add some randomness (±10% of time span)
-                    jitter = random.uniform(-0.1 * time_span, 0.1 * time_span)
-                    insertion_points[flow_key] = max(min_time, base_insertion + jitter)
-            else:
-                # No left traffic, space them out starting from 0
-                for i, flow_key in enumerate(right_flow_keys):
-                    insertion_points[flow_key] = i * 1.0  # 1 second apart
-        
-        return insertion_points
-    
-    def merge(self, output_file: str) -> bool:
-        """
-        Merge the loaded PCAP files and save the result.
-        
-        Args:
-            output_file (str): Path for the output merged PCAP file
-            
-        Returns:
-            bool: Success status
-        """
-        if not self.left_parser or not self.right_parser:
-            print("Error: PCAP files not loaded. Call load_pcaps() first.")
-            return False
-        
-        try:
-            # Extract netflows from both sides
-            print("Extracting netflows from left PCAP...")
-            left_flows = self._extract_netflows_with_timing(self.left_parser)
-            
-            print("Extracting netflows from right PCAP...")
-            right_flows = self._extract_netflows_with_timing(self.right_parser)
-            
-            print(f"Left PCAP has {len(left_flows)} netflows")
-            print(f"Right PCAP has {len(right_flows)} netflows")
-            
-            # Collect all packets with their scheduled times
-            all_scheduled_packets = []
-            
-            # Add all left-side packets (maintain original timestamps)
-            print("Scheduling left-side packets...")
-            for flow_key, flow_data in left_flows.items():
-                for i, pkt in enumerate(flow_data['packets']):
-                    timestamp = flow_data['timestamps'][i]
-                    all_scheduled_packets.append((timestamp, pkt.copy()))
-            
-            # Find insertion points for right-side flows
-            print("Calculating insertion points for right-side flows...")
-            insertion_points = self._find_insertion_points(left_flows, right_flows)
-            
-            # Schedule right-side packets
-            print("Scheduling right-side packets...")
-            for flow_key, flow_data in right_flows.items():
-                start_time = insertion_points.get(flow_key, 0.0)
-                scheduled_packets = self._schedule_flow_packets(flow_data, start_time)
-                all_scheduled_packets.extend(scheduled_packets)
-            
-            # Sort all packets by timestamp
-            print("Sorting packets by timestamp...")
-            all_scheduled_packets.sort(key=lambda x: x[0])
-            
-            # Update packet timestamps and create final packet list
-            print("Updating packet timestamps...")
-            final_packets = []
-            for timestamp, pkt in all_scheduled_packets:
-                # Update the packet's timestamp
-                pkt.time = timestamp
-                final_packets.append(pkt)
-            
-            # Verify netflow count
-            print("Verifying merged netflows...")
-            merged_parser = pcapparser("temp")
-            merged_parser.packets = final_packets
-            merged_parser._loaded = True
-            merged_flows = merged_parser.get_netflows()
-            
-            expected_flows = len(left_flows) + len(right_flows)
-            actual_flows = len(merged_flows)
-            
-            print(f"Expected netflows: {expected_flows}")
-            print(f"Actual netflows: {actual_flows}")
-            
-            if actual_flows != expected_flows:
-                print(f"Warning: Flow count mismatch! Expected {expected_flows}, got {actual_flows}")
-            
-            # Save the merged PCAP
-            print(f"Saving merged PCAP to {output_file}...")
-            wrpcap(output_file, final_packets)
-            
-            print(f"Successfully merged {len(final_packets)} packets into {output_file}")
-            print(f"Jitter parameter used: ±{self.jitter_max} seconds")
-            
-            return True
-            
-        except Exception as e:
-            print(f"Error during merge: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-    
-    def merge_pcaps(self, left_pcap: str, right_pcap: str, output_file: str) -> bool:
+    def merge_pcaps(self, left_pcap: str, right_pcap: str, output_file: str, 
+                    left_labels: Optional[str] = None, right_labels: Optional[str] = None,
+                    output_labels: Optional[str] = None) -> bool:
         """
         Convenience method to load and merge PCAP files in one call.
         
@@ -462,15 +530,18 @@ class PcapMerger:
             left_pcap (str): Path to left PCAP file
             right_pcap (str): Path to right PCAP file
             output_file (str): Path for output merged PCAP file
+            left_labels (str, optional): Path to left labels CSV file
+            right_labels (str, optional): Path to right labels CSV file
+            output_labels (str, optional): Path for output merged labels CSV file
             
         Returns:
             bool: Success status
         """
-        if not self.load_pcaps(left_pcap, right_pcap):
+        if not self.load_pcaps(left_pcap, right_pcap, left_labels, right_labels):
             return False
         
-        return self.merge(output_file)
-    
+        return self.merge(output_file, output_labels)
+
     def get_merge_statistics(self) -> Dict:
         """
         Get statistics about the last merge operation.
@@ -480,13 +551,14 @@ class PcapMerger:
         """
         if not self.left_parser or not self.right_parser:
             return {}
-        
+            
         left_flows = self._extract_netflows_with_timing(self.left_parser)
         right_flows = self._extract_netflows_with_timing(self.right_parser)
         
         stats = {
             'left_packets': len(self.left_parser.get_packets()),
             'right_packets': len(self.right_parser.get_packets()),
+            'total_expected_packets': len(self.left_parser.get_packets()) + len(self.right_parser.get_packets()),
             'left_netflows': len(left_flows),
             'right_netflows': len(right_flows),
             'total_expected_netflows': len(left_flows) + len(right_flows),
@@ -496,123 +568,32 @@ class PcapMerger:
         return stats
     
     def print_merge_info(self):
-        """Print detailed information about the merge process with protocol analysis."""
+        """Print detailed information about the merge process."""
         stats = self.get_merge_statistics()
         if not stats:
             print("No merge statistics available")
             return
         
         print(f"\n{'='*80}")
-        print(f"PCAP Merge Information with Protocol Analysis")
+        print(f"PCAP Merge Information")
         print(f"{'='*80}")
         print(f"Left PCAP:")
         print(f"  Packets: {stats['left_packets']}")
         print(f"  Netflows: {stats['left_netflows']}")
         
-        if 'left_protocols' in stats:
-            print(f"  Detected Protocols: {', '.join(stats['left_protocols'])}")
-            print(f"  Service Types: {', '.join(stats['left_services'])}")
-        
         print(f"Right PCAP:")
         print(f"  Packets: {stats['right_packets']}")
         print(f"  Netflows: {stats['right_netflows']}")
         
-        if 'right_protocols' in stats:
-            print(f"  Detected Protocols: {', '.join(stats['right_protocols'])}")
-            print(f"  Service Types: {', '.join(stats['right_services'])}")
-        
         print(f"Merge Settings:")
-        print(f"  Jitter: ±{stats['jitter_max']} seconds")
+        if stats['jitter_max'] > 0:
+            print(f"  Jitter: ±{stats['jitter_max']} seconds (applied to malicious traffic only)")
+        else:
+            print(f"  Jitter: Disabled")
+        if self.ip_translation_range:
+            print(f"  IP Translation Range: {self.ip_translation_range}")
         print(f"Expected Output:")
-        print(f"  Total Packets: {stats['left_packets'] + stats['right_packets']}")
+        print(f"  Total Packets: {stats['total_expected_packets']}")
         print(f"  Total Netflows: {stats['total_expected_netflows']}")
         
-        if 'combined_protocols' in stats:
-            print(f"  Combined Protocols: {', '.join(stats['combined_protocols'])}")
-            print(f"  Combined Service Types: {', '.join(stats['combined_services'])}")
-        
         print(f"{'='*80}\n")
-    
-    def get_enhanced_merge_statistics(self) -> Dict:
-        """
-        Get enhanced statistics including protocol analysis.
-        
-        Returns:
-            Dict: Enhanced statistics dictionary
-        """
-        if not self.left_parser or not self.right_parser:
-            return {}
-        
-        left_flows = self._extract_netflows_with_timing(self.left_parser)
-        right_flows = self._extract_netflows_with_timing(self.right_parser)
-        
-        # Analyze protocols and services
-        left_protocols = set()
-        left_services = set()
-        right_protocols = set()
-        right_services = set()
-        
-        for flow_data in left_flows.values():
-            if flow_data.get('application_protocol'):
-                left_protocols.add(flow_data['application_protocol'])
-            left_services.add(flow_data.get('likely_service', 'unknown'))
-        
-        for flow_data in right_flows.values():
-            if flow_data.get('application_protocol'):
-                right_protocols.add(flow_data['application_protocol'])
-            right_services.add(flow_data.get('likely_service', 'unknown'))
-        
-        stats = {
-            'left_packets': len(self.left_parser.get_packets()),
-            'right_packets': len(self.right_parser.get_packets()),
-            'left_netflows': len(left_flows),
-            'right_netflows': len(right_flows),
-            'total_expected_netflows': len(left_flows) + len(right_flows),
-            'jitter_max': self.jitter_max,
-            'left_protocols': sorted(list(left_protocols)),
-            'right_protocols': sorted(list(right_protocols)),
-            'left_services': sorted(list(left_services)),
-            'right_services': sorted(list(right_services)),
-            'combined_protocols': sorted(list(left_protocols | right_protocols)),
-            'combined_services': sorted(list(left_services | right_services))
-        }
-        
-        return stats
-
-
-def main():
-    """Example usage of PcapMerger"""
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='Merge two PCAP files maintaining netflows')
-    parser.add_argument('left_pcap', help='Path to left PCAP file')
-    parser.add_argument('right_pcap', help='Path to right PCAP file')
-    parser.add_argument('output', help='Path for output merged PCAP file')
-    parser.add_argument('--jitter', type=float, default=0.1, 
-                       help='Maximum jitter to apply to timestamps (seconds)')
-    
-    args = parser.parse_args()
-    
-    # Create merger with specified jitter
-    merger = PcapMerger(jitter_max=args.jitter)
-    
-    # Print merge info
-    print("Loading PCAP files...")
-    if merger.load_pcaps(args.left_pcap, args.right_pcap):
-        merger.print_merge_info()
-        
-        # Perform merge
-        if merger.merge(args.output):
-            print(f"\nMerge completed successfully!")
-        else:
-            print(f"\nMerge failed!")
-            return 1
-    else:
-        print("Failed to load PCAP files!")
-        return 1
-    
-    return 0
-
-
-if __name__ == "__main__":
-    exit(main())

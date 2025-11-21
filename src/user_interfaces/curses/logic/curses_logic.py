@@ -5,6 +5,7 @@ from typing import List, Optional, Dict, Any
 # Add the src directory to the path to import pcapparser
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'src'))
 from classes.pcapparser import pcapparser
+from features.augmentations import merge_augmentation
 
 
 class CursesLogic:
@@ -19,6 +20,10 @@ class CursesLogic:
         self.selected_netflow: Optional[Dict[str, Any]] = None
         self.netflow_packets: List[Any] = []
         self.last_error: Optional[str] = None
+        
+        # Augmentation state
+        self.augmentation_state: Dict[str, Any] = {}
+        self.augmentation_results: Optional[Dict[str, Any]] = None
         
     def scan_for_pcaps(self, samples_dir: str = None) -> List[str]:
         """Scan for available PCAP files"""
@@ -252,3 +257,97 @@ class CursesLogic:
     def get_last_error(self) -> Optional[str]:
         """Get the last error message"""
         return self.last_error
+    
+    # ==================== AUGMENTATION METHODS ====================
+    
+    def start_augmentation_merge(self) -> Dict[str, Any]:
+        """Initialize merge augmentation workflow"""
+        self.augmentation_state = {
+            'step': 1,  # Step tracking: 1=benign selection, 2=malicious, 3=config, 4=confirm, 5=running
+            'benign_pcap': None,
+            'malicious_pcap': None,
+            'project_name': None,
+            'ip_translation_range': None,
+            'jitter_max': 0.1,
+        }
+        return self.augmentation_state
+    
+    def set_benign_pcap(self, pcap_path: str) -> bool:
+        """Set the benign PCAP file for augmentation"""
+        if not self.augmentation_state:
+            self.last_error = "Augmentation not initialized"
+            return False
+        if not os.path.exists(pcap_path):
+            self.last_error = f"File not found: {pcap_path}"
+            return False
+        self.augmentation_state['benign_pcap'] = pcap_path
+        self.augmentation_state['step'] = 2
+        return True
+    
+    def set_malicious_pcap(self, pcap_path: str) -> bool:
+        """Set the malicious PCAP file for augmentation"""
+        if not self.augmentation_state:
+            self.last_error = "Augmentation not initialized"
+            return False
+        if not os.path.exists(pcap_path):
+            self.last_error = f"File not found: {pcap_path}"
+            return False
+        self.augmentation_state['malicious_pcap'] = pcap_path
+        self.augmentation_state['step'] = 3
+        return True
+    
+    def set_augmentation_config(self, project_name: str, 
+                                ip_translation_range: Optional[str] = None, 
+                                jitter_max: float = 0.1) -> bool:
+        """Configure augmentation options"""
+        if not self.augmentation_state:
+            self.last_error = "Augmentation not initialized"
+            return False
+        if not project_name or not project_name.strip():
+            self.last_error = "Project name cannot be empty"
+            return False
+        
+        self.augmentation_state['project_name'] = project_name.strip()
+        self.augmentation_state['ip_translation_range'] = ip_translation_range
+        self.augmentation_state['jitter_max'] = jitter_max
+        self.augmentation_state['step'] = 4
+        return True
+    
+    def run_augmentation_merge(self) -> Optional[Dict[str, Any]]:
+        """Execute the merge augmentation workflow"""
+        state = self.augmentation_state
+        
+        if not state or not state.get('benign_pcap') or not state.get('malicious_pcap'):
+            self.last_error = "Benign and malicious PCAP files must be selected"
+            return None
+        
+        if not state.get('project_name'):
+            self.last_error = "Project name must be set"
+            return None
+        
+        try:
+            state['step'] = 5  # Running
+            
+            # Run the augmentation
+            results = merge_augmentation(
+                benign_pcap=state['benign_pcap'],
+                malicious_pcap=state['malicious_pcap'],
+                project_name=state['project_name'],
+                ip_translation_range=state.get('ip_translation_range'),
+                jitter_max=state.get('jitter_max', 0.1)
+            )
+            
+            self.augmentation_results = results
+            return results
+            
+        except Exception as e:
+            self.last_error = f"Augmentation error: {str(e)}"
+            return None
+    
+    def get_augmentation_state(self) -> Dict[str, Any]:
+        """Get current augmentation state"""
+        return self.augmentation_state
+    
+    def get_augmentation_results(self) -> Optional[Dict[str, Any]]:
+        """Get results from last augmentation run"""
+        return self.augmentation_results
