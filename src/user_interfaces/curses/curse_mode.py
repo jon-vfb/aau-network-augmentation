@@ -109,10 +109,16 @@ class PcapCursesUI:
             self.draw_augmentation_benign_select_screen()
         elif self.mode == "augmentation_malicious_select":
             self.draw_augmentation_malicious_select_screen()
+        elif self.mode == "augmentation_attack_select":
+            self.draw_augmentation_attack_select_screen()
+        elif self.mode == "augmentation_attack_config":
+            self.draw_augmentation_attack_config_screen()
         elif self.mode == "augmentation_config":
             self.draw_augmentation_config_screen()
         elif self.mode == "augmentation_confirm":
             self.draw_augmentation_confirm_screen()
+        elif self.mode == "augmentation_confirm_attack":
+            self.draw_augmentation_confirm_attack_screen()
         elif self.mode == "augmentation_running":
             self.draw_augmentation_running_screen()
         elif self.mode == "augmentation_results":
@@ -200,10 +206,16 @@ class PcapCursesUI:
             return self.handle_augmentation_benign_select_input(key)
         elif self.mode == "augmentation_malicious_select":
             return self.handle_augmentation_malicious_select_input(key)
+        elif self.mode == "augmentation_attack_select":
+            return self.handle_augmentation_attack_select_input(key)
+        elif self.mode == "augmentation_attack_config":
+            return self.handle_augmentation_attack_config_input(key)
         elif self.mode == "augmentation_config":
             return self.handle_augmentation_config_input(key)
         elif self.mode == "augmentation_confirm":
             return self.handle_augmentation_confirm_input(key)
+        elif self.mode == "augmentation_confirm_attack":
+            return self.handle_augmentation_confirm_attack_input(key)
         elif self.mode == "augmentation_running":
             return self.handle_augmentation_running_input(key)
         elif self.mode == "augmentation_results":
@@ -372,7 +384,7 @@ class PcapCursesUI:
         """Draw the augmentation menu screen"""
         self.layout.draw_header("Augmentations")
         
-        menu_items = ["Merge PCAPs", "Back"]
+        menu_items = ["Merge PCAPs", "Generate & Merge Attack", "Back"]
         self.layout.draw_menu(
             menu_items, 
             self.menu_selected,
@@ -394,6 +406,71 @@ class PcapCursesUI:
         self.layout.draw_header("Augmentation - Select Malicious PCAP")
         self.layout.draw_pcap_list(self.logic.available_pcaps, self.selected_index, self.scroll_offset)
         self.layout.draw_help_bar("↑↓: Navigate | Enter: Select | ESC: Cancel | q: Quit")
+        self.layout.draw_status_bar(self.status_message, self.mode)
+    
+    def draw_augmentation_attack_select_screen(self):
+        """Draw the attack type selection screen"""
+        self.layout.draw_header("Augmentation - Select Attack Type")
+        
+        attacks = self.logic.get_available_attacks()
+        attack_names = [f"{a['name']} - {a['description']}" for a in attacks]
+        
+        if not attack_names:
+            self.layout.draw_text_box("No attacks available. Check attacks folder.", 5, 5)
+            self.layout.draw_help_bar("ESC: Back | q: Quit")
+        else:
+            self.layout.draw_menu(
+                attack_names,
+                self.selected_index,
+                title="Available Attacks"
+            )
+            self.layout.draw_help_bar("↑↓: Navigate | Enter: Select | ESC: Cancel | q: Quit")
+        
+        self.layout.draw_status_bar(self.status_message, self.mode)
+    
+    def draw_augmentation_attack_config_screen(self):
+        """Draw the attack configuration screen for entering attack parameters"""
+        self.layout.draw_header("Augmentation - Configure Attack Parameters")
+        
+        attack_config = self.logic.get_attack_config_state()
+        if not attack_config:
+            self.layout.draw_text_box("No attack selected", 5, 5)
+            self.layout.draw_help_bar("ESC: Back | q: Quit")
+            self.layout.draw_status_bar(self.status_message, self.mode)
+            return
+        
+        attack_name = attack_config.get('attack_name', 'Unknown')
+        parameters = attack_config.get('parameters', [])
+        current_param_index = attack_config.get('current_parameter_index', 0)
+        input_values = attack_config.get('input_values', {})
+        
+        config_text = f"""
+ATTACK CONFIGURATION: {attack_name}
+{'='*60}
+
+Configure attack parameters (↑↓ to navigate, ENTER to edit):
+
+"""
+        all_filled = True
+        for i, param in enumerate(parameters):
+            marker = ">> " if i == current_param_index else "   "
+            value = input_values.get(param['name'], 
+                                   param.get('default', ''))
+            status = "✓" if value else "✗"
+            
+            if param.get('required') and not value:
+                all_filled = False
+            
+            config_text += f"{marker}[{status}] {param['name']}: {value}\n"
+            config_text += f"        {param['description']}\n"
+            if param.get('validation_hint'):
+                config_text += f"        Hint: {param.get('validation_hint')}\n"
+            config_text += "\n"
+        
+        config_text += "\n[↑↓] Navigate | [ENTER] Edit | [D] Done | [ESC] Back\n"
+        
+        self.layout.draw_text_box(config_text, 2, 2)
+        self.layout.draw_help_bar("↑↓: Navigate | ENTER: Edit | D: Done | ESC: Back | q: Quit")
         self.layout.draw_status_bar(self.status_message, self.mode)
     
     def draw_augmentation_config_screen(self):
@@ -442,6 +519,34 @@ IP Translation Range:    {state.get('ip_translation_range', 'None')}
 Jitter Max (seconds):    {state.get('jitter_max', 0.1)}
 
 Confirm to start augmentation process?
+
+[Confirm] or [Cancel]
+"""
+        
+        menu_items = ["Confirm & Start", "Cancel & Edit"]
+        self.layout.draw_text_box(confirm_text, 8, 2)
+        self.layout.draw_menu(menu_items, self.menu_selected, title="")
+        
+        self.layout.draw_help_bar("↑↓: Navigate | Enter: Select | q: Quit")
+        self.layout.draw_status_bar(self.status_message, self.mode)
+    
+    def draw_augmentation_confirm_attack_screen(self):
+        """Draw the attack augmentation confirmation screen"""
+        self.layout.draw_header("Augmentation - Confirm Attack Settings")
+        
+        state = self.logic.get_augmentation_state()
+        benign = os.path.basename(state.get('benign_pcap', 'Not selected'))
+        attack_config = self.logic.get_attack_config_state()
+        attack_name = attack_config.get('attack_name', 'Unknown') if attack_config else 'Not selected'
+        
+        confirm_text = f"""
+Benign PCAP:             {benign}
+Attack Type:             {attack_name}
+Project Name:            {state.get('project_name', 'Not set')}
+IP Translation Range:    {state.get('ip_translation_range', 'None')}
+Jitter Max (seconds):    {state.get('jitter_max', 0.1)}
+
+Confirm to start attack generation and merge process?
 
 [Confirm] or [Cancel]
 """
@@ -524,7 +629,7 @@ Error Messages:
             self.mode = "pcap_info"
             self.status_message = "Back to PCAP info"
         elif key == curses.KEY_DOWN or key == ord('j'):
-            if self.menu_selected < 1:  # 2 options (0, 1)
+            if self.menu_selected < 2:  # 3 options (0, 1, 2)
                 self.menu_selected += 1
         elif key == curses.KEY_UP or key == ord('k'):
             if self.menu_selected > 0:
@@ -536,7 +641,13 @@ Error Messages:
                 self.selected_index = 0
                 self.scroll_offset = 0
                 self.status_message = "Select benign PCAP file"
-            elif self.menu_selected == 1:  # Back
+            elif self.menu_selected == 1:  # Generate & Merge Attack
+                self.logic.start_augmentation_attack()
+                self.mode = "augmentation_attack_select"
+                self.selected_index = 0
+                self.scroll_offset = 0
+                self.status_message = "Select benign PCAP file"
+            elif self.menu_selected == 2:  # Back
                 self.mode = "pcap_info"
                 self.status_message = "Back to PCAP info"
         
@@ -562,10 +673,17 @@ Error Messages:
             if pcap_count > 0 and 0 <= self.selected_index < pcap_count:
                 benign_path = self.logic.available_pcaps[self.selected_index]
                 if self.logic.set_benign_pcap(benign_path):
-                    self.mode = "augmentation_malicious_select"
-                    self.selected_index = 0
-                    self.scroll_offset = 0
-                    self.status_message = f"Benign: {os.path.basename(benign_path)} | Select malicious PCAP"
+                    # Check if we're in attack or merge workflow
+                    if self.logic.augmentation_state.get('augmentation_type') == 'attack':
+                        self.mode = "augmentation_attack_select"
+                        self.selected_index = 0
+                        self.scroll_offset = 0
+                        self.status_message = f"Benign: {os.path.basename(benign_path)} | Select attack type"
+                    else:
+                        self.mode = "augmentation_malicious_select"
+                        self.selected_index = 0
+                        self.scroll_offset = 0
+                        self.status_message = f"Benign: {os.path.basename(benign_path)} | Select malicious PCAP"
                 else:
                     self.status_message = f"Error: {self.logic.last_error}"
         
@@ -600,11 +718,152 @@ Error Messages:
         
         return True
     
+    def handle_augmentation_attack_select_input(self, key) -> bool:
+        """Handle input in attack type selection mode"""
+        attacks = self.logic.get_available_attacks()
+        attack_count = len(attacks)
+        
+        if key == 27:  # ESC
+            self.mode = "augmentation_menu"
+            self.menu_selected = 0
+            self.status_message = "Back to augmentation menu"
+        elif key == curses.KEY_DOWN or key == ord('j'):
+            if self.selected_index < attack_count - 1:
+                self.selected_index += 1
+        elif key == curses.KEY_UP or key == ord('k'):
+            if self.selected_index > 0:
+                self.selected_index -= 1
+        elif key in (ord('\n'), ord(' ')):  # Enter or Space
+            if attack_count > 0 and 0 <= self.selected_index < attack_count:
+                attack_key = attacks[self.selected_index]['key']
+                attack_name = attacks[self.selected_index]['name']
+                
+                if self.logic.set_attack(attack_key):
+                    self.mode = "augmentation_attack_config"
+                    self.status_message = f"Configure {attack_name} parameters"
+                else:
+                    self.status_message = f"Error: {self.logic.last_error}"
+        
+        return True
+    
+    def handle_augmentation_attack_config_input(self, key) -> bool:
+        """Handle input in attack configuration mode"""
+        attack_config = self.logic.get_attack_config_state()
+        if not attack_config:
+            self.status_message = "No attack selected"
+            return True
+        
+        parameters = attack_config.get('parameters', [])
+        if not parameters:
+            # No parameters to configure, move to config entry
+            self.mode = "augmentation_config"
+            self.menu_selected = 0
+            self.status_message = "Configure augmentation options"
+            return True
+        
+        param_count = len(parameters)
+        current_idx = attack_config.get('current_parameter_index', 0)
+        
+        if key == 27:  # ESC
+            self.mode = "augmentation_attack_select"
+            self.selected_index = 0
+            self.status_message = "Back to attack selection"
+        elif key == curses.KEY_DOWN or key == ord('j'):
+            if current_idx < param_count - 1:
+                self.logic.set_attack_parameter_index(current_idx + 1)
+        elif key == curses.KEY_UP or key == ord('k'):
+            if current_idx > 0:
+                self.logic.set_attack_parameter_index(current_idx - 1)
+        elif key in (ord('\n'), ord('e'), ord('E')):  # Enter or 'e' - edit current parameter
+            current_param = parameters[current_idx]
+            param_name = current_param['name']
+            param_type = current_param.get('param_type', 'str')
+            current_value = attack_config['input_values'].get(param_name, 
+                                                             current_param.get('default', ''))
+            
+            # Get text input from user
+            self.layout.clear_screen()
+            self.layout.draw_header(f"Enter value for: {param_name}")
+            
+            prompt_text = f"""
+Parameter: {param_name}
+Type: {param_type}
+Description: {current_param['description']}
+Hint: {current_param.get('validation_hint', 'No hint available')}
+
+Current value: {current_value}
+
+Enter new value (or press ESC to keep current):
+"""
+            
+            self.layout.draw_text_box(prompt_text, 3, 2)
+            
+            # Get user input using the layout's text input method
+            new_value = self.layout.get_text_input(15, 2, f"{param_name}: ", 100)
+            
+            if new_value is not None and new_value.strip():
+                # Update the parameter value
+                if self.logic.set_attack_parameter_value(param_name, new_value.strip()):
+                    self.status_message = f"✓ {param_name} updated"
+                else:
+                    self.status_message = f"✗ Invalid value: {self.logic.last_error}"
+        elif key in (ord('d'), ord('D')):  # 'D' for Done - proceed to next step
+            # Check if all required parameters are filled
+            all_filled = True
+            for param in parameters:
+                pname = param['name']
+                pval = attack_config['input_values'].get(pname, '')
+                if param.get('required') and not pval:
+                    all_filled = False
+                    self.status_message = f"✗ Required parameter '{pname}' is empty"
+                    break
+            
+            if all_filled:
+                # Move to config screen for project name, IP range, jitter
+                self.mode = "augmentation_config"
+                self.menu_selected = 0
+                self.status_message = "Configure augmentation options"
+        
+        return True
+    
+    def handle_augmentation_confirm_attack_input(self, key) -> bool:
+        """Handle input in attack confirmation mode"""
+        if key == 27:  # ESC
+            self.mode = "augmentation_config"
+            self.status_message = "Back to configuration"
+        elif key == curses.KEY_DOWN or key == ord('j'):
+            if self.menu_selected < 1:  # 2 options
+                self.menu_selected += 1
+        elif key == curses.KEY_UP or key == ord('k'):
+            if self.menu_selected > 0:
+                self.menu_selected -= 1
+        elif key in (ord('\n'), ord(' ')):  # Enter or Space
+            if self.menu_selected == 0:  # Confirm & Start
+                self.mode = "augmentation_running"
+                # Run attack generation and merge
+                success = self.logic.run_augmentation_attack_and_merge()
+                if success:
+                    self.mode = "augmentation_results"
+                    self.status_message = "Attack generation and merge completed"
+                else:
+                    self.mode = "augmentation_results"
+                    self.status_message = f"Augmentation error: {self.logic.last_error}"
+            elif self.menu_selected == 1:  # Cancel & Edit
+                self.mode = "augmentation_attack_config"
+                self.status_message = "Back to attack configuration"
+        
+        return True
+
     def handle_augmentation_config_input(self, key) -> bool:
         """Handle input in augmentation config mode"""
         if key == 27:  # ESC - go back
-            self.mode = "augmentation_benign_select"
-            self.status_message = "Back to PCAP selection"
+            # Check if we're in attack or merge workflow
+            augmentation_type = self.logic.augmentation_state.get('augmentation_type', 'merge')
+            if augmentation_type == 'attack':
+                self.mode = "augmentation_attack_config"
+            else:
+                self.mode = "augmentation_malicious_select"
+            self.status_message = "Back to previous step"
         elif key == ord(' ') or key == ord('\n'):  # Space or Enter - enter input mode
             self.augmentation_config_input_mode = 'project_name'
             self.show_config_input_dialog()
@@ -703,7 +962,11 @@ Error Messages:
         )
         
         if success:
-            self.mode = "augmentation_confirm"
+            # Choose confirmation screen based on augmentation type
+            augmentation_type = self.logic.augmentation_state.get('augmentation_type', 'merge')
+            confirm_mode = "augmentation_confirm_attack" if augmentation_type == 'attack' else "augmentation_confirm"
+            
+            self.mode = confirm_mode
             self.menu_selected = 0
             self.status_message = "Configuration complete - Confirm to proceed"
         else:

@@ -5,7 +5,8 @@ from typing import List, Optional, Dict, Any
 # Add the src directory to the path to import pcapparser
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'src'))
 from classes.pcapparser import pcapparser
-from features.augmentations import merge_augmentation, InputValidator
+from features.augmentations import merge_augmentation, attack_and_merge_augmentation, InputValidator
+from features.attacks import get_available_attacks, get_attack_instance
 
 
 class CursesLogic:
@@ -24,6 +25,9 @@ class CursesLogic:
         # Augmentation state
         self.augmentation_state: Dict[str, Any] = {}
         self.augmentation_results: Optional[Dict[str, Any]] = None
+        
+        # Attack augmentation state
+        self.attack_config_state: Dict[str, Any] = {}
         
     def scan_for_pcaps(self, samples_dir: str = None) -> List[str]:
         """Scan for available PCAP files"""
@@ -263,6 +267,7 @@ class CursesLogic:
     def start_augmentation_merge(self) -> Dict[str, Any]:
         """Initialize merge augmentation workflow"""
         self.augmentation_state = {
+            'augmentation_type': 'merge',
             'step': 1,  # Step tracking: 1=benign selection, 2=malicious, 3=config, 4=confirm, 5=running
             'benign_pcap': None,
             'malicious_pcap': None,
@@ -371,3 +376,163 @@ class CursesLogic:
     def get_augmentation_results(self) -> Optional[Dict[str, Any]]:
         """Get results from last augmentation run"""
         return self.augmentation_results
+    
+    # ==================== ATTACK AUGMENTATION METHODS ====================
+    
+    def start_augmentation_attack(self) -> Dict[str, Any]:
+        """Initialize attack augmentation workflow"""
+        self.augmentation_state = {
+            'augmentation_type': 'attack',
+            'step': 1,  # Step tracking: 1=benign selection, 2=attack selection, 3=config, 4=confirm, 5=running
+            'benign_pcap': None,
+            'project_name': None,
+            'ip_translation_range': None,
+            'jitter_max': 0.1,
+        }
+        self.attack_config_state = {}
+        return self.augmentation_state
+    
+    def get_available_attacks(self) -> List[Dict]:
+        """Get list of available attacks"""
+        try:
+            return get_available_attacks()
+        except Exception as e:
+            self.last_error = f"Error loading attacks: {e}"
+            return []
+    
+    def set_attack(self, attack_key: str) -> bool:
+        """Set the attack type for augmentation"""
+        try:
+            attack_instance = get_attack_instance(attack_key)
+            metadata = attack_instance.get_metadata()
+            
+            # Convert AttackParameter dataclass objects to dictionaries
+            parameters_list = []
+            for param in metadata['parameters']:
+                if hasattr(param, '__dict__'):
+                    # It's a dataclass, convert to dict
+                    param_dict = {
+                        'name': param.name,
+                        'param_type': param.param_type,
+                        'description': param.description,
+                        'required': param.required,
+                        'default': param.default,
+                        'validation_hint': param.validation_hint,
+                    }
+                else:
+                    # Already a dict
+                    param_dict = param
+                parameters_list.append(param_dict)
+            
+            self.attack_config_state = {
+                'attack_key': attack_key,
+                'attack_name': metadata['name'],
+                'attack_description': metadata['description'],
+                'parameters': parameters_list,
+                'input_values': {},
+                'current_parameter_index': 0,
+            }
+            
+            # Initialize input values with defaults
+            for param in parameters_list:
+                default_val = param.get('default')
+                self.attack_config_state['input_values'][param['name']] = default_val if default_val is not None else ''
+            
+            self.augmentation_state['step'] = 3
+            return True
+        except Exception as e:
+            self.last_error = f"Error setting attack: {e}"
+            return False
+    
+    def set_attack_parameter_index(self, index: int) -> bool:
+        """Set the current parameter index for attack configuration"""
+        if not self.attack_config_state:
+            return False
+        
+        params_count = len(self.attack_config_state.get('parameters', []))
+        if 0 <= index < params_count:
+            self.attack_config_state['current_parameter_index'] = index
+            return True
+        return False
+    
+    def set_attack_parameter_value(self, param_name: str, value: str) -> bool:
+        """Set a specific attack parameter value"""
+        if not self.attack_config_state:
+            self.last_error = "Attack not configured"
+            return False
+        
+        if param_name not in self.attack_config_state['input_values']:
+            self.last_error = f"Unknown parameter: {param_name}"
+            return False
+        
+        # Validate the parameter if validation method exists
+        parameters = self.attack_config_state.get('parameters', [])
+        param_def = next((p for p in parameters if p['name'] == param_name), None)
+        
+        if param_def:
+            try:
+                attack_instance = get_attack_instance(self.attack_config_state['attack_key'])
+                if not attack_instance._validate_single_parameter(param_def, value):
+                    self.last_error = f"Invalid value for {param_name}"
+                    return False
+            except Exception as e:
+                self.last_error = f"Validation error: {e}"
+                return False
+        
+        self.attack_config_state['input_values'][param_name] = value
+        return True
+    
+    def get_attack_config_state(self) -> Dict[str, Any]:
+        """Get the current attack configuration state"""
+        return self.attack_config_state
+    
+    def run_augmentation_attack_and_merge(self) -> bool:
+        """Execute the attack generation and merge workflow"""
+        state = self.augmentation_state
+        attack_config = self.attack_config_state
+        
+        if not state or not state.get('benign_pcap'):
+            self.last_error = "Benign PCAP file must be selected"
+            return False
+        
+        if not attack_config or not attack_config.get('attack_key'):
+            self.last_error = "Attack must be selected"
+            return False
+        
+        if not state.get('project_name'):
+            self.last_error = "Project name must be set"
+            return False
+        
+        try:
+            state['step'] = 5  # Running
+            
+            # Prepare attack parameters from input values
+            attack_params = {}
+            for param in attack_config.get('parameters', []):
+                param_name = param['name']
+                param_value = attack_config['input_values'].get(param_name, param.get('default', ''))
+                
+                # Convert value to appropriate type
+                if param.get('param_type') == 'int':
+                    attack_params[param_name] = int(param_value)
+                elif param.get('param_type') == 'float':
+                    attack_params[param_name] = float(param_value)
+                else:
+                    attack_params[param_name] = str(param_value)
+            
+            # Run the attack and merge augmentation
+            results = attack_and_merge_augmentation(
+                benign_pcap=state['benign_pcap'],
+                attack_key=attack_config['attack_key'],
+                attack_parameters=attack_params,
+                project_name=state['project_name'],
+                ip_translation_range=state.get('ip_translation_range'),
+                jitter_max=state.get('jitter_max', 0.1)
+            )
+            
+            self.augmentation_results = results
+            return results.get('success', False)
+            
+        except Exception as e:
+            self.last_error = f"Augmentation error: {str(e)}"
+            return False

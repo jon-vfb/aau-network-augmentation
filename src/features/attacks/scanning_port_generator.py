@@ -1,7 +1,11 @@
 import random
 from scapy.all import IP, TCP, wrpcap, RandShort
-from typing import List, Set
+from typing import List, Set, Dict, Any
 import os
+import sys
+
+# Import the attack base class
+from .attack_base import AttackBase, AttackParameter
 
 def generate_port_scan(target_ip: str, ports_to_scan: List[int], attacker_ip: str, open_ports: Set[int]) -> List:
     
@@ -61,6 +65,90 @@ def save_packets_to_pcap(packets: List, filename: str):
     wrpcap(filename, packets)
     
     print(f"PCAP file '{filename}' created successfully.")
+
+
+class PortScanAttack(AttackBase):
+    """
+    Port Scanning Attack generator implementing the AttackBase interface.
+    Performs a port scan on a target IP address.
+    """
+    
+    ATTACK_NAME = "Port Scan"
+    ATTACK_DESCRIPTION = "Port scanning attack to discover open ports on a target"
+    ATTACK_PARAMETERS = [
+        AttackParameter(
+            name="target_ip",
+            param_type="ip",
+            description="IP address of the target",
+            required=True,
+            validation_hint="e.g., 192.168.1.100"
+        ),
+        AttackParameter(
+            name="attacker_ip",
+            param_type="ip",
+            description="IP address of the attacker",
+            required=True,
+            validation_hint="e.g., 192.168.1.50"
+        ),
+        AttackParameter(
+            name="ports",
+            param_type="ports",
+            description="Ports to scan (comma-separated or ranges)",
+            required=True,
+            validation_hint="e.g., 80,443,8080 or 80-100"
+        ),
+        AttackParameter(
+            name="open_ports",
+            param_type="ports",
+            description="Which ports should appear as open (comma-separated)",
+            required=False,
+            default="80,443",
+            validation_hint="Subset of ports to scan, default: 80,443"
+        ),
+    ]
+    
+    def generate(self, parameters: Dict[str, Any], output_path: str) -> bool:
+        """
+        Generate port scan attack PCAP.
+        
+        Args:
+            parameters: Dict with 'target_ip', 'attacker_ip', 'ports', 'open_ports'
+            output_path: Path to save the generated PCAP
+            
+        Returns:
+            bool: True if successful
+        """
+        try:
+            # Validate parameters
+            is_valid, error_msg = self.validate_parameters(parameters)
+            if not is_valid:
+                raise ValueError(f"Invalid parameters: {error_msg}")
+            
+            target_ip = str(parameters.get('target_ip')).strip()
+            attacker_ip = str(parameters.get('attacker_ip')).strip()
+            ports_str = str(parameters.get('ports')).strip()
+            open_ports_str = str(parameters.get('open_ports', '80,443')).strip()
+            
+            # Parse port strings
+            ports_to_scan = self.parse_ports(ports_str)
+            open_ports_set = set(self.parse_ports(open_ports_str))
+            
+            # Generate attack packets
+            packets = generate_port_scan(
+                target_ip=target_ip,
+                ports_to_scan=ports_to_scan,
+                attacker_ip=attacker_ip,
+                open_ports=open_ports_set
+            )
+            
+            # Save to PCAP file
+            wrpcap(output_path, packets)
+            return True
+            
+        except Exception as e:
+            print(f"Error generating port scan attack: {e}")
+            return False
+
 
 # ONLY FOR TESTING PURPOSES
 if __name__ == "__main__":
