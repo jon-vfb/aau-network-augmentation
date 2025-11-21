@@ -689,6 +689,10 @@ class CursesLayout:
         # Show cursor
         curses.curs_set(1)
         
+        # Debug log
+        import os
+        debug_log = '/tmp/get_text_input_debug.log'
+        
         try:
             while True:
                 # Draw input field with current content
@@ -702,14 +706,26 @@ class CursesLayout:
                 
                 key = self.stdscr.getch()
                 
+                with open(debug_log, 'a') as f:
+                    f.write(f"Key pressed: {key} ({repr(chr(key) if 32 <= key <= 126 else 'N/A')}) - input_str so far: {repr(input_str)}\n")
+                    f.flush()
+                
                 if key == 27:  # ESC
                     curses.curs_set(0)
+                    self.stdscr.refresh()
+                    with open(debug_log, 'a') as f:
+                        f.write(f"ESC pressed - returning None\n")
+                        f.flush()
                     return None
                 elif key == curses.KEY_BACKSPACE or key == 8 or key == 127:  # Backspace
                     if input_str:
                         input_str = input_str[:-1]
-                elif key == ord('\n'):  # Enter
+                elif key == ord('\n') or key == 10 or key == 13:  # Enter (try multiple codes)
                     curses.curs_set(0)
+                    self.stdscr.refresh()
+                    with open(debug_log, 'a') as f:
+                        f.write(f"ENTER pressed - returning: {repr(input_str)}\n")
+                        f.flush()
                     return input_str
                 elif key == curses.KEY_LEFT:
                     pass  # Ignore for now
@@ -720,9 +736,14 @@ class CursesLayout:
                         input_str += chr(key)
         except KeyboardInterrupt:
             curses.curs_set(0)
+            self.stdscr.refresh()
+            with open(debug_log, 'a') as f:
+                f.write(f"KeyboardInterrupt - returning None\n")
+                f.flush()
             return None
         finally:
             curses.curs_set(0)
+            self.stdscr.refresh()
 
 
 # Import os for the layout class

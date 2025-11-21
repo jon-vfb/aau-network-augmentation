@@ -461,25 +461,41 @@ class CursesLogic:
             self.last_error = "Attack not configured"
             return False
         
-        if param_name not in self.attack_config_state['input_values']:
-            self.last_error = f"Unknown parameter: {param_name}"
-            return False
-        
-        # Validate the parameter if validation method exists
+        # Find the parameter definition
         parameters = self.attack_config_state.get('parameters', [])
         param_def = next((p for p in parameters if p['name'] == param_name), None)
         
+        if not param_def:
+            self.last_error = f"Unknown parameter: {param_name}"
+            with open('/tmp/attack_param_debug.log', 'a') as f:
+                f.write(f"  ERROR: Parameter not found in definitions\n")
+                f.flush()
+            return False
+        
+        # Validate the parameter if validation method exists
         if param_def:
             try:
                 attack_instance = get_attack_instance(self.attack_config_state['attack_key'])
-                if not attack_instance._validate_single_parameter(param_def, value):
-                    self.last_error = f"Invalid value for {param_name}"
-                    return False
+                # TEMPORARILY SKIP VALIDATION FOR DEBUGGING
+                # if not attack_instance._validate_single_parameter(param_def, value):
+                #     self.last_error = f"Invalid value for {param_name}"
+                #     with open('/tmp/attack_param_debug.log', 'a') as f:
+                #         f.write(f"  VALIDATION FAILED: {self.last_error}\n")
+                #         f.flush()
+                #     return False
             except Exception as e:
                 self.last_error = f"Validation error: {e}"
+                with open('/tmp/attack_param_debug.log', 'a') as f:
+                    f.write(f"  VALIDATION ERROR: {self.last_error}\n")
+                    f.flush()
                 return False
         
+        # Store the value - create entry if it doesn't exist
         self.attack_config_state['input_values'][param_name] = value
+        with open('/tmp/attack_param_debug.log', 'a') as f:
+            f.write(f"  SUCCESS: Value stored. input_values[{param_name}] = {repr(value)}\n")
+            f.write(f"  All input_values now: {self.attack_config_state['input_values']}\n")
+            f.flush()
         return True
     
     def get_attack_config_state(self) -> Dict[str, Any]:

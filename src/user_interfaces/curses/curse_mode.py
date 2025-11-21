@@ -461,8 +461,8 @@ Configure attack parameters (↑↓ to navigate, ENTER to edit):
             if param.get('required') and not value:
                 all_filled = False
             
-            config_text += f"{marker}[{status}] {param['name']}: {value}\n"
-            config_text += f"        {param['description']}\n"
+            config_text += f"{marker}[{status}] {param['name']}: {value if value else '(empty)'}\n"
+            config_text += f"        Type: {param.get('param_type', 'str')} | {param['description']}\n"
             if param.get('validation_hint'):
                 config_text += f"        Hint: {param.get('validation_hint')}\n"
             config_text += "\n"
@@ -539,12 +539,24 @@ Confirm to start augmentation process?
         attack_config = self.logic.get_attack_config_state()
         attack_name = attack_config.get('attack_name', 'Unknown') if attack_config else 'Not selected'
         
+        # Build parameters section
+        params_text = ""
+        if attack_config:
+            input_values = attack_config.get('input_values', {})
+            parameters = attack_config.get('parameters', [])
+            if parameters:
+                params_text += "\nAttack Parameters:\n"
+                for param in parameters:
+                    param_name = param['name']
+                    param_value = input_values.get(param_name, '')
+                    params_text += f"  {param_name}: {param_value if param_value else '(empty)'}\n"
+        
         confirm_text = f"""
 Benign PCAP:             {benign}
 Attack Type:             {attack_name}
 Project Name:            {state.get('project_name', 'Not set')}
 IP Translation Range:    {state.get('ip_translation_range', 'None')}
-Jitter Max (seconds):    {state.get('jitter_max', 0.1)}
+Jitter Max (seconds):    {state.get('jitter_max', 0.1)}{params_text}
 
 Confirm to start attack generation and merge process?
 
@@ -552,7 +564,7 @@ Confirm to start attack generation and merge process?
 """
         
         menu_items = ["Confirm & Start", "Cancel & Edit"]
-        self.layout.draw_text_box(confirm_text, 8, 2)
+        self.layout.draw_text_box(confirm_text, 6, 2)
         self.layout.draw_menu(menu_items, self.menu_selected, title="")
         
         self.layout.draw_help_bar("↑↓: Navigate | Enter: Select | q: Quit")
@@ -748,6 +760,10 @@ Error Messages:
     
     def handle_augmentation_attack_config_input(self, key) -> bool:
         """Handle input in attack configuration mode"""
+        with open('/tmp/attack_config_input.log', 'a') as f:
+            f.write(f"handle_augmentation_attack_config_input: key={key}\n")
+            f.flush()
+        
         attack_config = self.logic.get_attack_config_state()
         if not attack_config:
             self.status_message = "No attack selected"
@@ -764,6 +780,10 @@ Error Messages:
         param_count = len(parameters)
         current_idx = attack_config.get('current_parameter_index', 0)
         
+        with open('/tmp/attack_config_input.log', 'a') as f:
+            f.write(f"  current_idx={current_idx}, param_count={param_count}\n")
+            f.flush()
+        
         if key == 27:  # ESC
             self.mode = "augmentation_attack_select"
             self.selected_index = 0
@@ -774,7 +794,7 @@ Error Messages:
         elif key == curses.KEY_UP or key == ord('k'):
             if current_idx > 0:
                 self.logic.set_attack_parameter_index(current_idx - 1)
-        elif key in (ord('\n'), ord('e'), ord('E')):  # Enter or 'e' - edit current parameter
+        elif key in (ord('\n'), ord('e'), ord('E'), ord(' '), 10, 13):  # Enter, 'e', space, or common enter codes
             current_param = parameters[current_idx]
             param_name = current_param['name']
             param_type = current_param.get('param_type', 'str')
@@ -801,12 +821,46 @@ Enter new value (or press ESC to keep current):
             # Get user input using the layout's text input method
             new_value = self.layout.get_text_input(15, 2, f"{param_name}: ", 100)
             
+            # Debug: log what we got back
+            import sys
+            with open('/tmp/attack_param_debug.log', 'a') as f:
+                f.write(f"=====================\n")
+                f.write(f"get_text_input returned: {repr(new_value)}\n")
+                f.write(f"  Type: {type(new_value)}\n")
+                if new_value is not None:
+                    f.write(f"  Length: {len(new_value)}\n")
+                    f.write(f"  Stripped: {repr(new_value.strip())}\n")
+                    f.write(f"  Condition 'new_value is not None and new_value.strip()': {bool(new_value is not None and new_value.strip())}\n")
+                f.flush()
+            
             if new_value is not None and new_value.strip():
+                with open('/tmp/attack_param_debug.log', 'a') as f:
+                    f.write(f"  -> Going to call set_attack_parameter_value\n")
+                    f.flush()
                 # Update the parameter value
                 if self.logic.set_attack_parameter_value(param_name, new_value.strip()):
-                    self.status_message = f"✓ {param_name} updated"
+                    # Verify the value was actually saved
+                    config_state = self.logic.get_attack_config_state()
+                    saved_val = config_state['input_values'].get(param_name)
+                    self.status_message = f"✓ {param_name} = {saved_val}"
+                    with open('/tmp/attack_param_debug.log', 'a') as f:
+                        f.write(f"  -> SUCCESS: saved_val = {repr(saved_val)}\n")
+                        f.flush()
                 else:
                     self.status_message = f"✗ Invalid value: {self.logic.last_error}"
+                    with open('/tmp/attack_param_debug.log', 'a') as f:
+                        f.write(f"  -> FAILED: {self.status_message}\n")
+                        f.flush()
+            elif new_value is None:
+                self.status_message = "Input cancelled"
+                with open('/tmp/attack_param_debug.log', 'a') as f:
+                    f.write(f"  -> Input cancelled (ESC)\n")
+                    f.flush()
+            else:
+                self.status_message = "Empty value not allowed"
+                with open('/tmp/attack_param_debug.log', 'a') as f:
+                    f.write(f"  -> Empty value not allowed\n")
+                    f.flush()
         elif key in (ord('d'), ord('D')):  # 'D' for Done - proceed to next step
             # Check if all required parameters are filled
             all_filled = True
