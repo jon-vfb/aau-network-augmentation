@@ -669,6 +669,60 @@ class CursesLayout:
             y_pos = y_start + i
             if y_pos < height - 2:
                 self.stdscr.addstr(y_pos, x_start, line[:width-x_start-2], self.get_color_pair(7))
+    
+    def get_text_input(self, y: int, x: int, prompt: str = "", max_length: int = 100) -> Optional[str]:
+        """
+        Get text input from user at specified position.
+        Returns the input string or None if ESC was pressed.
+        """
+        import curses
+        
+        height, width = self.stdscr.getmaxyx()
+        
+        # Display prompt
+        self.stdscr.addstr(y, x, prompt, self.get_color_pair(7))
+        input_x = x + len(prompt)
+        
+        # Input buffer
+        input_str = ""
+        
+        # Show cursor
+        curses.curs_set(1)
+        
+        try:
+            while True:
+                # Draw input field with current content
+                display_width = width - input_x - 2
+                self.stdscr.addstr(y, input_x, " " * display_width)  # Clear previous
+                self.stdscr.addstr(y, input_x, input_str[:display_width], curses.A_UNDERLINE)
+                
+                # Position cursor
+                cursor_x = min(input_x + len(input_str), width - 2)
+                self.stdscr.refresh()
+                
+                key = self.stdscr.getch()
+                
+                if key == 27:  # ESC
+                    curses.curs_set(0)
+                    return None
+                elif key == curses.KEY_BACKSPACE or key == 8 or key == 127:  # Backspace
+                    if input_str:
+                        input_str = input_str[:-1]
+                elif key == ord('\n'):  # Enter
+                    curses.curs_set(0)
+                    return input_str
+                elif key == curses.KEY_LEFT:
+                    pass  # Ignore for now
+                elif key == curses.KEY_RIGHT:
+                    pass  # Ignore for now
+                elif 32 <= key <= 126:  # Printable characters
+                    if len(input_str) < max_length:
+                        input_str += chr(key)
+        except KeyboardInterrupt:
+            curses.curs_set(0)
+            return None
+        finally:
+            curses.curs_set(0)
 
 
 # Import os for the layout class
