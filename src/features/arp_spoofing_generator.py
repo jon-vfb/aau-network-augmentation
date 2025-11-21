@@ -1,4 +1,5 @@
 from scapy.all import Ether, ARP, wrpcap, rdpcap
+from scapy.utils import PcapReader
 from scapy.layers.inet import IP
 from typing import List, Optional
 import random
@@ -6,14 +7,22 @@ import time
 
 def extract_intervals_from_pcap(pcap_path):
     """
-    Extract inter-packet intervals from a benign PCAP file.
+    Extract inter-packet intervals from a benign PCAP file using streaming.
     Returns a list of time differences between consecutive packets.
     """
-    packets = rdpcap(pcap_path)
-    times = [pkt.time for pkt in packets]
-    intervals = [times[i+1] - times[i] for i in range(len(times)-1)]
-    # Filter out any zero or negative intervals (shouldn't happen, but just in case)
-    intervals = [i for i in intervals if i > 0]
+    intervals = []
+    prev_time = None
+    try:
+        with PcapReader(pcap_path) as reader:
+            for pkt in reader:
+                if pkt.time is not None:
+                    if prev_time is not None:
+                        interval = pkt.time - prev_time
+                        if interval > 0:
+                            intervals.append(interval)
+                    prev_time = pkt.time
+    except Exception as e:
+        raise RuntimeError(f"Failed to read PCAP file: {e}")
     return intervals
 
 def generate_timestamps(num_packets, intervals, start_time=None):
@@ -33,37 +42,40 @@ def generate_timestamps(num_packets, intervals, start_time=None):
 
 def extract_macs_from_pcap(pcap_path, victim_ip: Optional[str] = None, gateway_ip: Optional[str] = None):
     """
-    Scan a pcap and try to find the Ethernet MAC addresses for the given
+    Scan a pcap using streaming to find the Ethernet MAC addresses for the given
     victim_ip and gateway_ip. Returns (victim_mac, gateway_mac) or (None, None)
     when not found.
     """
-    packets = rdpcap(pcap_path)
     victim_mac = None
     gateway_mac = None
-    for pkt in packets:
-        # Only examine packets that have IP and Ether layers
-        if pkt.haslayer(IP) and hasattr(pkt, 'src'):
-            try:
-                ip_src = pkt[IP].src
-                ip_dst = pkt[IP].dst
-            except Exception:
-                continue
-            # Ether src/dst may be present as pkt.src / pkt.dst
-            eth_src = getattr(pkt, 'src', None)
-            eth_dst = getattr(pkt, 'dst', None)
-            if victim_ip:
-                if ip_src == victim_ip and eth_src:
-                    victim_mac = eth_src
-                elif ip_dst == victim_ip and eth_dst:
-                    victim_mac = eth_dst
-            if gateway_ip:
-                if ip_src == gateway_ip and eth_src:
-                    gateway_mac = eth_src
-                elif ip_dst == gateway_ip and eth_dst:
-                    gateway_mac = eth_dst
-        # early exit if both resolved
-        if (not victim_ip or victim_mac) and (not gateway_ip or gateway_mac):
-            break
+    try:
+        with PcapReader(pcap_path) as reader:
+            for pkt in reader:
+                # Only examine packets that have IP and Ether layers
+                if pkt.haslayer(IP) and hasattr(pkt, 'src'):
+                    try:
+                        ip_src = pkt[IP].src
+                        ip_dst = pkt[IP].dst
+                    except Exception:
+                        continue
+                    # Ether src/dst may be present as pkt.src / pkt.dst
+                    eth_src = getattr(pkt, 'src', None)
+                    eth_dst = getattr(pkt, 'dst', None)
+                    if victim_ip:
+                        if ip_src == victim_ip and eth_src:
+                            victim_mac = eth_src
+                        elif ip_dst == victim_ip and eth_dst:
+                            victim_mac = eth_dst
+                    if gateway_ip:
+                        if ip_src == gateway_ip and eth_src:
+                            gateway_mac = eth_src
+                        elif ip_dst == gateway_ip and eth_dst:
+                            gateway_mac = eth_dst
+                # early exit if both resolved
+                if (not victim_ip or victim_mac) and (not gateway_ip or gateway_mac):
+                    break
+    except Exception as e:
+        raise RuntimeError(f"Failed to read PCAP file: {e}")
     return victim_mac, gateway_mac
 
 def make_mac_with_oui(oui: str) -> str:
@@ -80,20 +92,23 @@ def make_mac_with_oui(oui: str) -> str:
 
 
 def extract_ips_from_pcap(pcap_path):
-    """Return a list of unique IPv4 addresses seen in the pcap (src and dst)."""
-    packets = rdpcap(pcap_path)
+    """Return a list of unique IPv4 addresses seen in the pcap (src and dst) using streaming."""
     ips = []
-    for pkt in packets:
-        if pkt.haslayer(IP):
-            try:
-                s = pkt[IP].src
-                d = pkt[IP].dst
-            except Exception:
-                continue
-            if s not in ips:
-                ips.append(s)
-            if d not in ips:
-                ips.append(d)
+    try:
+        with PcapReader(pcap_path) as reader:
+            for pkt in reader:
+                if pkt.haslayer(IP):
+                    try:
+                        s = pkt[IP].src
+                        d = pkt[IP].dst
+                    except Exception:
+                        continue
+                    if s not in ips:
+                        ips.append(s)
+                    if d not in ips:
+                        ips.append(d)
+    except Exception as e:
+        raise RuntimeError(f"Failed to read PCAP file: {e}")
     return ips
 
 
@@ -270,9 +285,19 @@ class ARPSpoofGenerator:
         The first packet timestamp will match the benign PCAP's first packet.
         """
         packets = self.generate_spoof_packets(num_packets=num_packets)
-        benign_packets = rdpcap(benign_pcap_path)
         intervals = extract_intervals_from_pcap(benign_pcap_path)
-        start_time = benign_packets[0].time if len(benign_packets) > 0 else None
+        
+        # Get the first timestamp from benign pcap by streaming
+        start_time = None
+        try:
+            with PcapReader(benign_pcap_path) as reader:
+                for pkt in reader:
+                    if pkt.time is not None:
+                        start_time = pkt.time
+                        break
+        except Exception as e:
+            raise RuntimeError(f"Failed to read first packet timestamp: {e}")
+        
         timestamps = generate_timestamps(len(packets), intervals, start_time=start_time)
         for pkt, ts in zip(packets, timestamps):
             pkt.time = ts
