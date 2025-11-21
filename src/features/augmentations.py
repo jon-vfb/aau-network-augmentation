@@ -5,7 +5,10 @@ Handles merging of benign and malicious pcaps with labeling and tracking.
 
 import os
 import sys
+import re
+import ipaddress
 from pathlib import Path
+from typing import Tuple, Optional
 
 # Ensure the repository's `src` directory is on sys.path
 _THIS_DIR = os.path.dirname(__file__)
@@ -15,6 +18,164 @@ if _SRC_DIR not in sys.path:
 
 from features.labeler import Labeler
 from features.merger.pcap_merger import PcapMerger
+
+
+class InputValidator:
+    """Validates user input for augmentation parameters."""
+    
+    @staticmethod
+    def validate_project_name(name: str) -> Tuple[bool, str]:
+        """
+        Validate project name.
+        
+        Args:
+            name (str): Project name to validate
+            
+        Returns:
+            Tuple[bool, str]: (is_valid, error_message)
+        """
+        if not name or not name.strip():
+            return False, "Project name cannot be empty"
+        
+        name = name.strip()
+        
+        # Check length
+        if len(name) > 100:
+            return False, "Project name must be 100 characters or less"
+        
+        # Check for valid characters (alphanumeric, underscore, hyphen, space)
+        if not re.match(r'^[a-zA-Z0-9_\-\s]+$', name):
+            return False, "Project name can only contain letters, numbers, underscores, hyphens, and spaces"
+        
+        return True, ""
+    
+    @staticmethod
+    def validate_ip_range(ip_range: str) -> Tuple[bool, str]:
+        """
+        Validate IP range in CIDR notation.
+        
+        Args:
+            ip_range (str): IP range in CIDR format (e.g., '192.168.100.0/24')
+            
+        Returns:
+            Tuple[bool, str]: (is_valid, error_message)
+        """
+        if not ip_range or not ip_range.strip():
+            return True, ""  # Empty is valid - means no IP translation
+        
+        ip_range = ip_range.strip()
+        
+        try:
+            # Try to parse as a valid network
+            network = ipaddress.ip_network(ip_range, strict=False)
+            
+            # Check if it's a reasonable subnet size (at least /25 to ensure enough IPs)
+            if network.prefixlen > 25:
+                return False, f"IP range must be /25 or larger (requested: /{network.prefixlen}). Minimum 2 usable IPs required."
+            
+            # Check if it's not too large (reasonable limit at /8)
+            if network.prefixlen < 8:
+                return False, f"IP range is too large (/{network.prefixlen}). Maximum /8 supported."
+            
+            return True, ""
+        except ValueError as e:
+            return False, f"Invalid CIDR notation: {str(e)}. Use format like '192.168.100.0/24'"
+        except Exception as e:
+            return False, f"Error validating IP range: {str(e)}"
+    
+    @staticmethod
+    def validate_jitter(jitter_str: str) -> Tuple[bool, float, str]:
+        """
+        Validate jitter value.
+        
+        Args:
+            jitter_str (str): Jitter value as string (in seconds)
+            
+        Returns:
+            Tuple[bool, float, str]: (is_valid, jitter_value, error_message)
+        """
+        if not jitter_str or not jitter_str.strip():
+            return True, 0.1, ""  # Default value
+        
+        jitter_str = jitter_str.strip()
+        
+        try:
+            jitter = float(jitter_str)
+            
+            # Validate range
+            if jitter < 0:
+                return False, 0.0, "Jitter cannot be negative"
+            
+            if jitter > 10.0:
+                return False, 0.0, "Jitter must be 10 seconds or less"
+            
+            return True, jitter, ""
+        except ValueError:
+            return False, 0.0, "Jitter must be a valid number (e.g., 0.1 for 100 milliseconds)"
+        except Exception as e:
+            return False, 0.0, f"Error validating jitter: {str(e)}"
+
+
+def get_user_input_interactive() -> Tuple[str, Optional[str], float]:
+    """
+    Interactively collect augmentation parameters from user with validation.
+    
+    Returns:
+        Tuple[str, Optional[str], float]: (project_name, ip_range, jitter_max)
+    """
+    validator = InputValidator()
+    
+    # Get project name
+    while True:
+        print("\n" + "="*80)
+        print("PROJECT CONFIGURATION")
+        print("="*80)
+        project_name = input("Enter project name: ").strip()
+        is_valid, error_msg = validator.validate_project_name(project_name)
+        if is_valid:
+            break
+        print(f"✗ Invalid project name: {error_msg}")
+    
+    # Get IP translation range
+    while True:
+        print("\nIP TRANSLATION RANGE")
+        print("-" * 80)
+        print("Enter IP range in CIDR notation (e.g., '192.168.100.0/24')")
+        print("Leave blank to skip IP translation")
+        ip_range_input = input("IP range (or press Enter to skip): ").strip()
+        is_valid, error_msg = validator.validate_ip_range(ip_range_input)
+        if is_valid:
+            ip_range = ip_range_input if ip_range_input else None
+            break
+        print(f"✗ Invalid IP range: {error_msg}")
+    
+    # Get jitter value
+    while True:
+        print("\nJITTER CONFIGURATION")
+        print("-" * 80)
+        print("Jitter adds random delays to malicious traffic timestamps (in seconds)")
+        print("Valid range: 0 to 10 seconds (default: 0.1 for 100 milliseconds)")
+        jitter_input = input("Enter jitter value or press Enter for default (0.1): ").strip()
+        is_valid, jitter_value, error_msg = validator.validate_jitter(jitter_input)
+        if is_valid:
+            break
+        print(f"✗ Invalid jitter value: {error_msg}")
+    
+    # Confirmation
+    print("\n" + "="*80)
+    print("CONFIGURATION SUMMARY")
+    print("="*80)
+    print(f"Project Name: {project_name}")
+    print(f"IP Translation Range: {ip_range if ip_range else 'Not set (no translation)'}")
+    print(f"Jitter: {jitter_value} seconds")
+    print("="*80)
+    
+    confirm = input("\nProceed with these settings? (y/N): ").strip().lower()
+    if confirm != 'y':
+        print("Configuration cancelled.")
+        return None, None, None
+    
+    return project_name, ip_range, jitter_value
 
 
 class MergeAugmentation:
@@ -72,6 +233,7 @@ class MergeAugmentation:
             "malicious_csv": None,
             "merged_pcap": None,
             "merged_csv": None,
+            "ip_translation_report": None,
             "messages": []
         }
         
@@ -135,6 +297,21 @@ class MergeAugmentation:
             results["messages"].append(f"✓ Merged pcaps: {merged_pcap}")
             results["messages"].append(f"✓ Generated merged labels: {merged_csv}")
             
+            # IP translation report is always generated
+            output_dir = os.path.dirname(merged_pcap)
+            output_base_name = os.path.splitext(os.path.basename(merged_pcap))[0]
+            ip_report_path = os.path.join(output_dir, f"{output_base_name}_ip_translation_report.csv")
+            if os.path.exists(ip_report_path):
+                results["ip_translation_report"] = ip_report_path
+                # Count translations in the report
+                try:
+                    import pandas as pd
+                    report_df = pd.read_csv(ip_report_path)
+                    translation_count = len(report_df)
+                    results["messages"].append(f"✓ Generated IP translation report: {ip_report_path} ({translation_count} translations)")
+                except:
+                    results["messages"].append(f"✓ Generated IP translation report: {ip_report_path}")
+            
             # Get and report merge statistics
             stats = merger.get_merge_statistics()
             results["merge_statistics"] = stats
@@ -165,6 +342,8 @@ class MergeAugmentation:
             print(f"Malicious CSV (input): {results['malicious_csv']}")
             print(f"Merged PCAP: {results['merged_pcap']}")
             print(f"Merged CSV (output): {results['merged_csv']}")
+            if results.get("ip_translation_report"):
+                print(f"IP Translation Report: {results['ip_translation_report']}")
         
         print(f"{'='*80}\n")
 
@@ -193,15 +372,60 @@ def merge_augmentation(benign_pcap: str, malicious_pcap: str, project_name: str,
 
 
 if __name__ == "__main__":
-    # Example usage
     import sys
     
-    if len(sys.argv) < 4:
-        print("Usage: python augmentations.py <benign_pcap> <malicious_pcap> <project_name>")
+    # Check if pcap files are provided as command-line arguments
+    if len(sys.argv) < 3:
+        print("Usage: python augmentations.py <benign_pcap> <malicious_pcap> [project_name] [ip_range] [jitter]")
+        print("\nExample with arguments:")
+        print("  python augmentations.py benign.pcap malicious.pcap my_project 192.168.100.0/24 0.1")
+        print("\nExample with interactive input:")
+        print("  python augmentations.py benign.pcap malicious.pcap")
         sys.exit(1)
     
     benign_path = sys.argv[1]
     malicious_path = sys.argv[2]
-    proj_name = sys.argv[3]
     
-    merge_augmentation(benign_path, malicious_path, proj_name)
+    # Validate PCAP files
+    if not os.path.exists(benign_path):
+        print(f"Error: Benign PCAP file not found: {benign_path}")
+        sys.exit(1)
+    
+    if not os.path.exists(malicious_path):
+        print(f"Error: Malicious PCAP file not found: {malicious_path}")
+        sys.exit(1)
+    
+    # Get parameters
+    if len(sys.argv) >= 4:
+        # Use command-line arguments
+        proj_name = sys.argv[3]
+        ip_range = sys.argv[4] if len(sys.argv) > 4 else None
+        jitter_max = float(sys.argv[5]) if len(sys.argv) > 5 else 0.1
+        
+        # Validate inputs
+        validator = InputValidator()
+        is_valid, error_msg = validator.validate_project_name(proj_name)
+        if not is_valid:
+            print(f"Invalid project name: {error_msg}")
+            sys.exit(1)
+        
+        if ip_range:
+            is_valid, error_msg = validator.validate_ip_range(ip_range)
+            if not is_valid:
+                print(f"Invalid IP range: {error_msg}")
+                sys.exit(1)
+        
+        is_valid, jitter_max, error_msg = validator.validate_jitter(str(jitter_max))
+        if not is_valid:
+            print(f"Invalid jitter value: {error_msg}")
+            sys.exit(1)
+    else:
+        # Use interactive input
+        result = get_user_input_interactive()
+        if result[0] is None:
+            sys.exit(1)
+        proj_name, ip_range, jitter_max = result
+    
+    # Run augmentation
+    merge_augmentation(benign_path, malicious_path, proj_name, 
+                      ip_translation_range=ip_range, jitter_max=jitter_max)

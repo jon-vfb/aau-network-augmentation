@@ -42,6 +42,7 @@ class PcapMerger:
         self.left_time_offset = None  # Track time mapping for left PCAP
         self.right_time_offset = None  # Track time mapping for right PCAP
         self.packet_source_map = {}  # Map packet index to source ('left' or 'right')
+        self.ip_translation_report = []  # Track all IP translations for reporting
         
     def _adjust_labels_for_merged_packets(self, merged_packets: List[Tuple[float, any]], output_labels_path: Optional[str] = None) -> Optional[pd.DataFrame]:
         """
@@ -277,26 +278,34 @@ class PcapMerger:
                 new_pkt = pkt.copy()
                 
                 # Apply IP translation if packet has IP layer and range is set
-                if self.ip_translation_range and new_pkt.haslayer(IP):
+                if new_pkt.haslayer(IP):
                     original_src = new_pkt[IP].src
                     original_dst = new_pkt[IP].dst
                     
-                    # Get translated IPs
-                    new_src_ip = self._get_next_available_ip(original_src)
-                    new_dst_ip = self._get_next_available_ip(original_dst)
-                    
-                    # Only translate if we successfully got new IPs
-                    if new_src_ip and new_dst_ip:
-                        new_pkt[IP].src = new_src_ip
-                        new_pkt[IP].dst = new_dst_ip
-                        # Delete checksums to force recalculation
-                        del new_pkt[IP].chksum
-                        if new_pkt.haslayer(TCP):
-                            del new_pkt[TCP].chksum
-                        elif new_pkt.haslayer(UDP):
-                            del new_pkt[UDP].chksum
+                    if self.ip_translation_range:
+                        # Get translated IPs
+                        new_src_ip = self._get_next_available_ip(original_src)
+                        new_dst_ip = self._get_next_available_ip(original_dst)
+                        
+                        # Only translate if we successfully got new IPs
+                        if new_src_ip and new_dst_ip:
+                            new_pkt[IP].src = new_src_ip
+                            new_pkt[IP].dst = new_dst_ip
+                            # Delete checksums to force recalculation
+                            del new_pkt[IP].chksum
+                            if new_pkt.haslayer(TCP):
+                                del new_pkt[TCP].chksum
+                            elif new_pkt.haslayer(UDP):
+                                del new_pkt[UDP].chksum
+                        else:
+                            print(f"Warning: Could not allocate new IPs for {original_src}->{original_dst}, keeping original IPs")
+                            # Still track that IPs stayed the same
+                            self._track_ip_translation(original_src, original_src)
+                            self._track_ip_translation(original_dst, original_dst)
                     else:
-                        print(f"Warning: Could not allocate new IPs for {original_src}->{original_dst}, keeping original IPs")
+                        # No translation range - track IPs as same
+                        self._track_ip_translation(original_src, original_src)
+                        self._track_ip_translation(original_dst, original_dst)
                 
                 # Map the malicious packet timestamp into the benign timeline
                 # Calculate the relative position of this packet in the original malicious capture
@@ -353,6 +362,17 @@ class PcapMerger:
                 if output_labels is not None:
                     print(f"Generated merged labels with {len(output_labels)} records")
             
+            # Generate IP translation report (always done, even if no translations occurred)
+            output_dir = os.path.dirname(output_path)
+            output_base_name = os.path.splitext(os.path.basename(output_path))[0]
+            report_path = self._generate_ip_translation_report(output_dir, output_base_name)
+            if report_path:
+                print(f"IP translation report saved: {report_path}")
+            elif self.ip_translation_range:
+                print(f"Note: No IP translations were needed (all IPs already in use or no conflicts)")
+            else:
+                print(f"Note: IP translation disabled (no translation range specified)")
+            
             return True
             
         except Exception as e:
@@ -374,6 +394,20 @@ class PcapMerger:
             if pkt.haslayer(IP):
                 self.used_ips.add(pkt[IP].src)
                 self.used_ips.add(pkt[IP].dst)
+    
+    def _track_ip_translation(self, original_ip: str, translated_ip: str):
+        """
+        Track an IP translation in the report. Avoids duplicates.
+        
+        Args:
+            original_ip (str): Original IP from malicious traffic
+            translated_ip (str): IP it was translated to (or same IP if no translation)
+        """
+        if not any(entry['original_ip'] == original_ip for entry in self.ip_translation_report):
+            self.ip_translation_report.append({
+                'original_ip': original_ip,
+                'translated_ip': translated_ip
+            })
                 
     def _get_next_available_ip(self, original_ip: str) -> Optional[str]:
         """
@@ -397,6 +431,8 @@ class PcapMerger:
             if ip_str not in self.used_ips:
                 self.ip_mapping[original_ip] = ip_str
                 self.used_ips.add(ip_str)
+                # Track this translation for the report
+                self._track_ip_translation(original_ip, ip_str)
                 return ip_str
                 
         return None
@@ -520,6 +556,30 @@ class PcapMerger:
             
         return flows
         
+    def _generate_ip_translation_report(self, output_dir: str, base_name: str) -> Optional[str]:
+        """
+        Generate a CSV report of all IP translations from malicious traffic.
+        Report is always created with proper headers, even if no translations occurred.
+        
+        Args:
+            output_dir (str): Directory where the report will be saved
+            base_name (str): Base name for the report file
+            
+        Returns:
+            Optional[str]: Path to the generated report file, or None if there's an error
+        """
+        try:
+            # Create report with structured format - always include headers
+            report_data = self.ip_translation_report if self.ip_translation_report else []
+            report_df = pd.DataFrame(report_data, columns=['original_ip', 'translated_ip'])
+            report_path = os.path.join(output_dir, f"{base_name}_ip_translation_report.csv")
+            report_df.to_csv(report_path, index=False)
+            print(f"IP Translation Report generated: {report_path} ({len(report_data)} translations)")
+            return report_path
+        except Exception as e:
+            print(f"Error generating IP translation report: {e}")
+            return None
+
     def merge_pcaps(self, left_pcap: str, right_pcap: str, output_file: str, 
                     left_labels: Optional[str] = None, right_labels: Optional[str] = None,
                     output_labels: Optional[str] = None) -> bool:
