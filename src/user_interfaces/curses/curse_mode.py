@@ -25,6 +25,7 @@ except AttributeError as e:
 # Import our components
 from layout.curses_layout import CursesLayout
 from logic.curses_logic import CursesLogic
+from features.augmentations import InputValidator
 
 
 class PcapCursesUI:
@@ -43,6 +44,14 @@ class PcapCursesUI:
         self.menu_selected = 0
         self.selected_packet_index = 0  # For packet detail view
         self.packet_detail_scroll = 0  # For scrolling in packet detail view
+        
+        # Augmentation configuration input state
+        self.augmentation_config_input_mode = None  # 'project_name', 'ip_range', 'jitter', or None
+        self.augmentation_inputs = {
+            'project_name': None,
+            'ip_translation_range': None,
+            'jitter_max': 0.1
+        }
         
     def init_ui(self, stdscr):
         """Initialize the UI components"""
@@ -394,20 +403,27 @@ class PcapCursesUI:
         state = self.logic.get_augmentation_state()
         
         config_text = f"""
-Project Name:            [{state.get('project_name', 'Not set')}]
-IP Translation Range:    [{state.get('ip_translation_range', 'None (optional)')}]
-Jitter Max (seconds):    [{state.get('jitter_max', 0.1)}]
+CONFIGURATION SCREEN
+{'='*60}
 
-Configuration Instructions:
-- Project name: Name for organizing output
-- IP Translation: Optional CIDR range for malicious traffic (e.g., 192.168.100.0/24)
-- Jitter: Add timing variations for realism (0.0 - 1.0 seconds)
+Enter configuration details for the augmentation:
 
-Press ENTER to continue or ESC to go back
+1. Project Name (e.g., 'my_augmentation' or 'test_001')
+   Current: {state.get('project_name', 'Not set')}
+
+2. IP Translation Range (optional CIDR notation)
+   Example: 192.168.100.0/24
+   Current: {state.get('ip_translation_range', 'Not set')}
+
+3. Jitter Max (seconds, 0-10)
+   Example: 0.1 (for 100 milliseconds)
+   Current: {state.get('jitter_max', 0.1)}
+
+Navigation: q=Quit | ESC=Back | ENTER=Input mode
 """
         
-        self.layout.draw_text_box(config_text, 10, 2)
-        self.layout.draw_help_bar("Enter: Continue | ESC: Back | q: Quit")
+        self.layout.draw_text_box(config_text, 2, 2)
+        self.layout.draw_help_bar("Press SPACE to enter input mode or ESC to go back")
         self.layout.draw_status_bar(self.status_message, self.mode)
     
     def draw_augmentation_confirm_screen(self):
@@ -586,19 +602,112 @@ Error Messages:
     
     def handle_augmentation_config_input(self, key) -> bool:
         """Handle input in augmentation config mode"""
-        # For now, auto-confirm and go to confirmation screen
-        if key in (ord('\n'), ord(' '), 27):  # Enter, Space, or ESC
-            # For now, use default config
-            self.logic.set_augmentation_config(
-                project_name=self.logic.augmentation_state.get('benign_pcap', 'augmentation').split('/')[-1].split('.')[0] + '_merged',
-                ip_translation_range=None,
-                jitter_max=0.1
-            )
-            self.mode = "augmentation_confirm"
-            self.menu_selected = 0
-            self.status_message = "Confirm augmentation settings"
+        if key == 27:  # ESC - go back
+            self.mode = "augmentation_benign_select"
+            self.status_message = "Back to PCAP selection"
+        elif key == ord(' ') or key == ord('\n'):  # Space or Enter - enter input mode
+            self.augmentation_config_input_mode = 'project_name'
+            self.show_config_input_dialog()
+        elif key == ord('q'):  # q to quit
+            return False
         
         return True
+    
+    def show_config_input_dialog(self):
+        """Show an interactive dialog to input all configuration values"""
+        # Input project name
+        self.layout.draw_header("Augmentation - Configure Options")
+        self.layout.draw_text_box("Entering configuration mode...", 10, 2)
+        self.layout.draw_help_bar("ESC: Cancel | ENTER: Confirm")
+        self.layout.refresh()
+        
+        # Project name
+        self.layout.clear_screen()
+        self.layout.draw_header("Augmentation - Enter Project Name")
+        self.layout.draw_text_box(
+            "Project Name (alphanumeric, underscore, hyphen, space)\n"
+            "Example: augmentation_001 or test_merge\n"
+            "(Max 100 characters)\n\n"
+            "Leave blank to cancel\n", 
+            4, 2
+        )
+        project_name = self.layout.get_text_input(12, 2, "Project Name: ", 100)
+        
+        if project_name is None or project_name.strip() == "":
+            self.status_message = "Configuration cancelled"
+            return
+        
+        # IP range
+        self.layout.clear_screen()
+        self.layout.draw_header("Augmentation - Enter IP Translation Range")
+        self.layout.draw_text_box(
+            "IP Translation Range (CIDR notation, optional)\n"
+            "Example: 192.168.100.0/24\n"
+            "Example: 10.50.0.0/16\n"
+            "Subnet size: /8 to /25\n\n"
+            "Leave blank to skip IP translation\n",
+            4, 2
+        )
+        ip_range = self.layout.get_text_input(12, 2, "IP Range (optional): ", 50)
+        
+        if ip_range is None:
+            self.status_message = "Configuration cancelled"
+            return
+        
+        # Jitter
+        self.layout.clear_screen()
+        self.layout.draw_header("Augmentation - Enter Jitter Value")
+        self.layout.draw_text_box(
+            "Jitter Max (seconds, adds randomness to timestamps)\n"
+            "Range: 0 to 10 seconds\n"
+            "Examples: 0.1 (100ms), 0.5 (500ms), 1.0 (1 second)\n\n"
+            "Press ENTER for default (0.1 seconds)\n",
+            4, 2
+        )
+        jitter_str = self.layout.get_text_input(12, 2, "Jitter (seconds): ", 10)
+        
+        if jitter_str is None:
+            self.status_message = "Configuration cancelled"
+            return
+        
+        # Validate and apply configuration
+        validator = InputValidator()
+        
+        # Validate project name
+        is_valid, error_msg = validator.validate_project_name(project_name)
+        if not is_valid:
+            self.status_message = f"Invalid project name: {error_msg}"
+            return
+        
+        # Validate IP range
+        if ip_range and ip_range.strip():
+            is_valid, error_msg = validator.validate_ip_range(ip_range)
+            if not is_valid:
+                self.status_message = f"Invalid IP range: {error_msg}"
+                return
+        
+        # Validate jitter
+        if jitter_str.strip():
+            is_valid, jitter_value, error_msg = validator.validate_jitter(jitter_str)
+            if not is_valid:
+                self.status_message = f"Invalid jitter value: {error_msg}"
+                return
+        else:
+            jitter_value = 0.1
+        
+        # Apply configuration
+        success = self.logic.set_augmentation_config(
+            project_name=project_name.strip(),
+            ip_translation_range=ip_range.strip() if ip_range.strip() else None,
+            jitter_max=jitter_value
+        )
+        
+        if success:
+            self.mode = "augmentation_confirm"
+            self.menu_selected = 0
+            self.status_message = "Configuration complete - Confirm to proceed"
+        else:
+            self.status_message = f"Error: {self.logic.last_error}"
     
     def handle_augmentation_confirm_input(self, key) -> bool:
         """Handle input in augmentation confirmation mode"""

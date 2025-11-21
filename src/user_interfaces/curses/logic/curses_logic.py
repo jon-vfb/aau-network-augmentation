@@ -5,7 +5,7 @@ from typing import List, Optional, Dict, Any
 # Add the src directory to the path to import pcapparser
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'src'))
 from classes.pcapparser import pcapparser
-from features.augmentations import merge_augmentation
+from features.augmentations import merge_augmentation, InputValidator
 
 
 class CursesLogic:
@@ -299,17 +299,37 @@ class CursesLogic:
     def set_augmentation_config(self, project_name: str, 
                                 ip_translation_range: Optional[str] = None, 
                                 jitter_max: float = 0.1) -> bool:
-        """Configure augmentation options"""
+        """Configure augmentation options with validation"""
         if not self.augmentation_state:
             self.last_error = "Augmentation not initialized"
             return False
-        if not project_name or not project_name.strip():
-            self.last_error = "Project name cannot be empty"
+        
+        # Validate inputs
+        validator = InputValidator()
+        
+        # Validate project name
+        is_valid, error_msg = validator.validate_project_name(project_name)
+        if not is_valid:
+            self.last_error = f"Invalid project name: {error_msg}"
             return False
         
+        # Validate IP range
+        if ip_translation_range and ip_translation_range.strip():
+            is_valid, error_msg = validator.validate_ip_range(ip_translation_range)
+            if not is_valid:
+                self.last_error = f"Invalid IP range: {error_msg}"
+                return False
+        
+        # Validate jitter
+        is_valid, jitter_value, error_msg = validator.validate_jitter(str(jitter_max))
+        if not is_valid:
+            self.last_error = f"Invalid jitter value: {error_msg}"
+            return False
+        
+        # All validations passed
         self.augmentation_state['project_name'] = project_name.strip()
-        self.augmentation_state['ip_translation_range'] = ip_translation_range
-        self.augmentation_state['jitter_max'] = jitter_max
+        self.augmentation_state['ip_translation_range'] = ip_translation_range.strip() if ip_translation_range else None
+        self.augmentation_state['jitter_max'] = jitter_value
         self.augmentation_state['step'] = 4
         return True
     
