@@ -534,16 +534,16 @@ class pcapparser:
                     protocol = str(ip_layer.proto)
                     src_port = dst_port = 0
                 
-                # Create flow key (bidirectional - normalize by sorting)
-                addr_pair = sorted([(ip_layer.src, src_port), (ip_layer.dst, dst_port)])
-                flow_key = (addr_pair[0][0], addr_pair[0][1], addr_pair[1][0], addr_pair[1][1], protocol)
+                # Create flow key (unidirectional - matches Cisco NetFlow standard)
+                # A flow from A->B is different from B->A
+                flow_key = (ip_layer.src, src_port, ip_layer.dst, dst_port, protocol)
                 
                 if flow_key not in flows:
                     flows[flow_key] = {
-                        'src_ip': addr_pair[0][0],
-                        'src_port': addr_pair[0][1],
-                        'dst_ip': addr_pair[1][0],
-                        'dst_port': addr_pair[1][1],
+                        'src_ip': ip_layer.src,
+                        'src_port': src_port,
+                        'dst_ip': ip_layer.dst,
+                        'dst_port': dst_port,
                         'protocol': protocol,
                         'packet_count': 0,
                         'packet_indices': [],

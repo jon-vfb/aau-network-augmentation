@@ -3,6 +3,7 @@ from scapy.all import IP, TCP, wrpcap, RandShort
 from typing import List, Set, Dict, Any
 import os
 import sys
+import time
 
 # Import the attack base class
 from .attack_base import AttackBase, AttackParameter
@@ -10,37 +11,58 @@ from .attack_base import AttackBase, AttackParameter
 def generate_port_scan(target_ip: str, ports_to_scan: List[int], attacker_ip: str, open_ports: Set[int]) -> List:
     
     attack_packets = []
+    base_time = time.time()  # Use current timestamp as base
     
-    for port in ports_to_scan:
-        random_source_port = RandShort()
-        #generation of the packet
-        syn_packet = IP(src=attacker_ip, dst=target_ip) / TCP(sport=random_source_port, dport=port, flags="S")
+    for i, port in enumerate(ports_to_scan):
+        random_source_port = random.randint(1024, 65535)  # Generate actual integer
+        seq_num = random.randint(0, 2**32 - 1)  # Random initial sequence number
+        
+        # Generation of the SYN packet
+        syn_packet = IP(src=attacker_ip, dst=target_ip) / TCP(sport=random_source_port, dport=port, flags="S", seq=seq_num)
+        
+        # Delete checksums so Scapy recalculates them correctly
+        del syn_packet[IP].chksum
+        del syn_packet[TCP].chksum
+        syn_packet = IP(bytes(syn_packet))  # Rebuild packet with correct checksums
+        
+        syn_packet.time = base_time + (i * 0.001)  # Space packets by 1ms
         
         attack_packets.append(syn_packet)
 
-        simulated_rtt = random.uniform(0.0001, 0.0005) # Simulated round-trip time between 0.1ms and 0.5ms
+        simulated_rtt = random.uniform(0.0001, 0.0005)  # Simulated round-trip time between 0.1ms and 0.5ms
         response_time = syn_packet.time + simulated_rtt 
 
         if port in open_ports:
+            response_seq = random.randint(0, 2**32 - 1)  # Server's initial sequence number
             
             syn_ack_packet = IP(src=target_ip, dst=attacker_ip) / TCP(
                 sport=port,
                 dport=random_source_port,
                 flags="SA",
-                ack=syn_packet.seq + 1,
-                seq=RandShort()
+                ack=seq_num + 1,  # Acknowledge client's SYN
+                seq=response_seq
             )
+            
+            # Recalculate checksums
+            del syn_ack_packet[IP].chksum
+            del syn_ack_packet[TCP].chksum
+            syn_ack_packet = IP(bytes(syn_ack_packet))
+            
             syn_ack_packet.time = response_time
             attack_packets.append(syn_ack_packet)
 
-            #RST packet in order to be stealthy (not completing the handshake)
+            # RST packet in order to be stealthy (not completing the handshake)
             rst_packet = IP(src=attacker_ip, dst=target_ip) / TCP(
                 sport=random_source_port,
                 dport=port,
-                flags="R", # Flag Reset
-                ack=syn_ack_packet.seq + 1,
-                seq=syn_packet.seq + 1
+                flags="R",  # Flag Reset
+                seq=seq_num + 1  # Next expected sequence from client
             )
+            
+            # Recalculate checksums
+            del rst_packet[IP].chksum
+            del rst_packet[TCP].chksum
+            rst_packet = IP(bytes(rst_packet))
             
             rst_packet.time = response_time + 0.00005 
             attack_packets.append(rst_packet)
@@ -50,10 +72,16 @@ def generate_port_scan(target_ip: str, ports_to_scan: List[int], attacker_ip: st
             rst_ack_packet = IP(src=target_ip, dst=attacker_ip) / TCP(
                 sport=port,
                 dport=random_source_port,
-                flags="RA", # Flag Reset-Ack
-                ack=syn_packet.seq + 1,
-                seq=0 # No sequence number for RST-ACK
+                flags="RA",  # Flag Reset-Ack
+                ack=seq_num + 1,  # Acknowledge the SYN
+                seq=0  # No sequence number for RST-ACK
             )
+            
+            # Recalculate checksums
+            del rst_ack_packet[IP].chksum
+            del rst_ack_packet[TCP].chksum
+            rst_ack_packet = IP(bytes(rst_ack_packet))
+            
             rst_ack_packet.time = response_time
             attack_packets.append(rst_ack_packet)
 

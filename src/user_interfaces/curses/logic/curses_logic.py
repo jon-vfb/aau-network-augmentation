@@ -174,8 +174,9 @@ class CursesLogic:
                     dst_port = getattr(packet, 'dport', 0)
                     protocol = str(getattr(packet, 'proto', 'Unknown'))
                 
-                # Create bidirectional flow key
-                flow_key = tuple(sorted([(src_ip, src_port), (dst_ip, dst_port)]) + [protocol])
+                # Create unidirectional flow key (matches Cisco NetFlow standard)
+                # A flow from A->B is different from B->A
+                flow_key = (src_ip, src_port, dst_ip, dst_port, protocol)
                 
                 if flow_key not in flows:
                     flows[flow_key] = {
@@ -263,6 +264,18 @@ class CursesLogic:
         return self.last_error
     
     # ==================== AUGMENTATION METHODS ====================
+    
+    def reset_augmentation_state(self, augmentation_type: str = 'merge') -> Dict[str, Any]:
+        """Reset and initialize augmentation state for a new workflow"""
+        if augmentation_type == 'merge':
+            return self.start_augmentation_merge()
+        elif augmentation_type == 'attack':
+            return self.start_augmentation_attack()
+        elif augmentation_type == 'attack_only':
+            return self.start_augmentation_attack()
+        else:
+            self.last_error = f"Unknown augmentation type: {augmentation_type}"
+            return {}
     
     def start_augmentation_merge(self) -> Dict[str, Any]:
         """Initialize merge augmentation workflow"""
@@ -353,11 +366,15 @@ class CursesLogic:
         try:
             state['step'] = 5  # Running
             
+            # Set augmentations output to root level (same as samples)
+            augmentations_dir = os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'augmentations')
+            
             # Run the augmentation
             results = merge_augmentation(
                 benign_pcap=state['benign_pcap'],
                 malicious_pcap=state['malicious_pcap'],
                 project_name=state['project_name'],
+                output_base_dir=augmentations_dir,
                 ip_translation_range=state.get('ip_translation_range'),
                 jitter_max=state.get('jitter_max', 0.1)
             )
@@ -380,14 +397,11 @@ class CursesLogic:
     # ==================== ATTACK AUGMENTATION METHODS ====================
     
     def start_augmentation_attack(self) -> Dict[str, Any]:
-        """Initialize attack augmentation workflow"""
+        """Initialize attack generation workflow (no merging)"""
         self.augmentation_state = {
             'augmentation_type': 'attack',
-            'step': 1,  # Step tracking: 1=benign selection, 2=attack selection, 3=config, 4=confirm, 5=running
-            'benign_pcap': None,
+            'step': 1,  # Step tracking: 1=attack selection, 2=config, 3=confirm, 4=running
             'project_name': None,
-            'ip_translation_range': None,
-            'jitter_max': 0.1,
         }
         self.attack_config_state = {}
         return self.augmentation_state
@@ -467,9 +481,6 @@ class CursesLogic:
         
         if not param_def:
             self.last_error = f"Unknown parameter: {param_name}"
-            with open('/tmp/attack_param_debug.log', 'a') as f:
-                f.write(f"  ERROR: Parameter not found in definitions\n")
-                f.flush()
             return False
         
         # Validate the parameter if validation method exists
@@ -479,28 +490,84 @@ class CursesLogic:
                 # TEMPORARILY SKIP VALIDATION FOR DEBUGGING
                 # if not attack_instance._validate_single_parameter(param_def, value):
                 #     self.last_error = f"Invalid value for {param_name}"
-                #     with open('/tmp/attack_param_debug.log', 'a') as f:
-                #         f.write(f"  VALIDATION FAILED: {self.last_error}\n")
-                #         f.flush()
                 #     return False
             except Exception as e:
                 self.last_error = f"Validation error: {e}"
-                with open('/tmp/attack_param_debug.log', 'a') as f:
-                    f.write(f"  VALIDATION ERROR: {self.last_error}\n")
-                    f.flush()
                 return False
         
         # Store the value - create entry if it doesn't exist
         self.attack_config_state['input_values'][param_name] = value
-        with open('/tmp/attack_param_debug.log', 'a') as f:
-            f.write(f"  SUCCESS: Value stored. input_values[{param_name}] = {repr(value)}\n")
-            f.write(f"  All input_values now: {self.attack_config_state['input_values']}\n")
-            f.flush()
         return True
     
     def get_attack_config_state(self) -> Dict[str, Any]:
         """Get the current attack configuration state"""
         return self.attack_config_state
+    
+    def run_attack_generation(self) -> bool:
+        """Execute standalone attack generation (no merging)"""
+        state = self.augmentation_state
+        attack_config = self.attack_config_state
+        
+        if not attack_config or not attack_config.get('attack_key'):
+            self.last_error = "Attack must be selected"
+            return False
+        
+        if not state.get('project_name'):
+            self.last_error = "Project name must be set"
+            return False
+        
+        try:
+            state['step'] = 4  # Running
+            
+            # Prepare attack parameters from input values
+            attack_params = {}
+            for param in attack_config.get('parameters', []):
+                param_name = param['name']
+                param_value = attack_config['input_values'].get(param_name, param.get('default', ''))
+                
+                # Convert value to appropriate type
+                if param.get('param_type') == 'int':
+                    attack_params[param_name] = int(param_value)
+                elif param.get('param_type') == 'float':
+                    attack_params[param_name] = float(param_value)
+                else:
+                    attack_params[param_name] = str(param_value)
+            
+            # Setup output directory - save to samples folder
+            output_dir = os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'samples')
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Generate output filename
+            output_filename = f"{state['project_name']}_attack.pcap"
+            output_path = os.path.join(output_dir, output_filename)
+            
+            # Get attack instance and generate
+            attack_instance = get_attack_instance(attack_config['attack_key'])
+            success = attack_instance.generate(attack_params, output_path)
+            
+            if success:
+                self.augmentation_results = {
+                    'success': True,
+                    'output_file': output_path,
+                    'attack_type': attack_config['attack_name'],
+                    'message': f"Attack PCAP generated successfully: {output_filename}"
+                }
+                return True
+            else:
+                self.last_error = "Attack generation failed"
+                self.augmentation_results = {
+                    'success': False,
+                    'error': 'Attack generation failed'
+                }
+                return False
+                
+        except Exception as e:
+            self.last_error = f"Error generating attack: {str(e)}"
+            self.augmentation_results = {
+                'success': False,
+                'error': str(e)
+            }
+            return False
     
     def run_augmentation_attack_and_merge(self) -> bool:
         """Execute the attack generation and merge workflow"""
@@ -536,12 +603,16 @@ class CursesLogic:
                 else:
                     attack_params[param_name] = str(param_value)
             
+            # Set augmentations output to root level (same as samples)
+            augmentations_dir = os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'augmentations')
+            
             # Run the attack and merge augmentation
             results = attack_and_merge_augmentation(
                 benign_pcap=state['benign_pcap'],
                 attack_key=attack_config['attack_key'],
                 attack_parameters=attack_params,
                 project_name=state['project_name'],
+                output_base_dir=augmentations_dir,
                 ip_translation_range=state.get('ip_translation_range'),
                 jitter_max=state.get('jitter_max', 0.1)
             )
