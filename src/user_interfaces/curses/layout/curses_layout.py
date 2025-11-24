@@ -165,14 +165,13 @@ class CursesLayout:
                 self.stdscr.addstr(start_y + 2 + i, 4, line[:width-6], curses.color_pair(7))
     
     def draw_main_menu(self, selected_option: int):
-        """Draw the main menu options"""
+        """Draw the main menu options for PCAP viewing"""
         height, width = self.stdscr.getmaxyx()
         menu_start_y = height // 2
         
         menu_options = [
             "1. View Netflows",
-            "2. Augmentations",
-            "3. Back to PCAP List"
+            "2. Back to PCAP List"
         ]
         
         self.stdscr.addstr(menu_start_y - 1, 4, "Options:", curses.color_pair(1) | curses.A_BOLD)
@@ -693,13 +692,26 @@ class CursesLayout:
             while True:
                 # Draw input field with current content
                 display_width = width - input_x - 2
-                self.stdscr.addstr(y, input_x, " " * display_width)  # Clear previous
-                self.stdscr.addstr(y, input_x, input_str[:display_width], curses.A_UNDERLINE)
+                if display_width > 0:
+                    # Clear previous input area
+                    clear_str = " " * min(display_width, max_length + 5)
+                    self.stdscr.addstr(y, input_x, clear_str)
+                    # Display current input with underline
+                    if input_str:
+                        display_str = input_str[:display_width]
+                        self.stdscr.addstr(y, input_x, display_str, curses.A_UNDERLINE)
+                    else:
+                        # Show placeholder when empty
+                        self.stdscr.addstr(y, input_x, "_", curses.A_DIM)
                 
-                # Position cursor
-                cursor_x = min(input_x + len(input_str), width - 2)
+                # Position cursor at end of input (or at start if empty)
+                cursor_x = input_x + len(input_str)
+                if cursor_x >= width - 1:
+                    cursor_x = width - 2
+                self.stdscr.move(y, cursor_x)
                 self.stdscr.refresh()
                 
+                # Get input
                 key = self.stdscr.getch()
                 
                 if key == 27:  # ESC
@@ -708,18 +720,18 @@ class CursesLayout:
                 elif key == curses.KEY_BACKSPACE or key == 8 or key == 127:  # Backspace
                     if input_str:
                         input_str = input_str[:-1]
-                elif key == ord('\n'):  # Enter
+                elif key == ord('\n') or key == 10 or key == 13:  # Enter
                     curses.curs_set(0)
                     return input_str
-                elif key == curses.KEY_LEFT:
-                    pass  # Ignore for now
-                elif key == curses.KEY_RIGHT:
-                    pass  # Ignore for now
                 elif 32 <= key <= 126:  # Printable characters
                     if len(input_str) < max_length:
                         input_str += chr(key)
         except KeyboardInterrupt:
             curses.curs_set(0)
+            return None
+        except Exception as e:
+            curses.curs_set(0)
+            # If there's an error during input, return None
             return None
         finally:
             curses.curs_set(0)

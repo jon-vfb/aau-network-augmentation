@@ -1,9 +1,14 @@
 from scapy.all import Ether, ARP, wrpcap, rdpcap
 from scapy.utils import PcapReader
 from scapy.layers.inet import IP
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import random
 import time
+import os
+import sys
+
+# Import the attack base class
+from .attack_base import AttackBase, AttackParameter
 
 def extract_intervals_from_pcap(pcap_path):
     """
@@ -372,6 +377,105 @@ def main():
     except Exception as e:
         print(f"Error: {e}")
         return
+
+
+class ARPSpoofingAttack(AttackBase):
+    """
+    ARP Spoofing Attack generator implementing the AttackBase interface.
+    Performs an ARP spoofing attack by poisoning ARP caches.
+    """
+    
+    ATTACK_NAME = "ARP Spoofing"
+    ATTACK_DESCRIPTION = "ARP cache poisoning attack to intercept network traffic"
+    ATTACK_PARAMETERS = [
+        AttackParameter(
+            name="victim_ip",
+            param_type="ip",
+            description="IP address of the victim",
+            required=True,
+            validation_hint="e.g., 192.168.1.100"
+        ),
+        AttackParameter(
+            name="gateway_ip",
+            param_type="ip",
+            description="IP address of the gateway/router",
+            required=True,
+            validation_hint="e.g., 192.168.1.1"
+        ),
+        AttackParameter(
+            name="num_packets",
+            param_type="int",
+            description="Number of attack packet sequences to generate",
+            required=False,
+            default=10,
+            validation_hint="Default: 10"
+        ),
+        AttackParameter(
+            name="interval",
+            param_type="float",
+            description="Time interval between attack sequences (seconds)",
+            required=False,
+            default=1.0,
+            validation_hint="Default: 1.0 seconds"
+        ),
+    ]
+    
+    def generate(self, parameters: Dict[str, Any], output_path: str) -> bool:
+        """
+        Generate ARP spoofing attack PCAP.
+        
+        Args:
+            parameters: Dict with 'victim_ip', 'gateway_ip', 'num_packets', 'interval'
+            output_path: Path to save the generated PCAP
+            
+        Returns:
+            bool: True if successful
+        """
+        try:
+            # Validate parameters
+            is_valid, error_msg = self.validate_parameters(parameters)
+            if not is_valid:
+                raise ValueError(f"Invalid parameters: {error_msg}")
+            
+            victim_ip = str(parameters.get('victim_ip')).strip()
+            gateway_ip = str(parameters.get('gateway_ip')).strip()
+            num_packets = int(parameters.get('num_packets', 10))
+            interval = float(parameters.get('interval', 1.0))
+            
+            # Generate random MACs for victim and gateway
+            victim_mac = self._generate_mac()
+            gateway_mac = self._generate_mac()
+            attacker_mac = self._generate_mac()
+            
+            # Create generator and generate packets
+            generator = ARPSpoofGenerator(
+                victim_ip=victim_ip,
+                victim_mac=victim_mac,
+                gateway_ip=gateway_ip,
+                gateway_mac=gateway_mac,
+                attacker_mac=attacker_mac
+            )
+            
+            packets = generator.generate_spoof_packets(
+                num_packets=num_packets,
+                interval_seconds=interval
+            )
+            
+            # Save to PCAP file
+            wrpcap(output_path, packets)
+            return True
+            
+        except Exception as e:
+            print(f"Error generating ARP spoofing attack: {e}")
+            return False
+    
+    @staticmethod
+    def _generate_mac() -> str:
+        """Generate a random MAC address."""
+        mac = [random.randint(0, 255) for _ in range(6)]
+        mac[0] = (mac[0] & 0xfc) | 0x02  # Set locally administered bit
+        return ':'.join([f"{x:02x}" for x in mac])
+    
     
 if __name__ == "__main__":
     main()
