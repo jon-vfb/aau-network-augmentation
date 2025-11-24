@@ -666,7 +666,7 @@ Merge Statistics:
   Malicious Packets:   {results.get('merge_statistics', {}).get('right_packets', 0)}
   Total Packets:       {results.get('merge_statistics', {}).get('total_expected_packets', 0)}
 
-Press ENTER to return to main menu
+Press ENTER to exit and validate the merged PCAP file
 """
         else:
             status = "✗ FAILED"
@@ -684,7 +684,7 @@ Error Messages:
             result_text += "\n\nPress ENTER to return to main menu"
         
         self.layout.draw_text_box(result_text, 10, 2)
-        self.layout.draw_help_bar("Enter: Return to Menu | q: Quit")
+        self.layout.draw_help_bar("Enter: Exit & Validate | q: Quit")
         self.layout.draw_status_bar(self.status_message, self.mode)
     
     # ==================== AUGMENTATION INPUT HANDLERS ====================
@@ -1179,9 +1179,15 @@ Ready to generate attack traffic?
     def handle_augmentation_results_input(self, key) -> bool:
         """Handle input in augmentation results mode"""
         if key in (ord('\n'), ord(' ')):  # Enter or Space
-            self.mode = "main_menu"
-            self.selected_index = 0
-            self.status_message = "Back to main menu"
+            # Exit curses mode to validate the merged PCAP
+            results = self.logic.get_augmentation_results()
+            if results and results.get('success') and results.get('merged_pcap'):
+                # Store the merged PCAP path for validation after exiting curses
+                self.merged_pcap_to_validate = results.get('merged_pcap')
+                return False  # Exit curses mode
+            else:
+                self.mode = "pcap_info"
+                self.status_message = "Back to PCAP info"
         
         return True
     
@@ -1216,6 +1222,100 @@ def run_curses_ui():
     try:
         ui = PcapCursesUI()
         curses.wrapper(ui.run)
+        
+        # After exiting curses mode, check if we need to validate a merged PCAP
+        if hasattr(ui, 'merged_pcap_to_validate') and ui.merged_pcap_to_validate:
+            print("\n" + "="*80)
+            print("Curses UI exited. Starting PCAP validation...")
+            print("="*80)
+            
+            # Import validation functions
+            import sys
+            import os
+            sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+            from validators.basic_validator import (
+                validate_pcap_magic, validate_pcap_snaplen,
+                validate_pcap_packet_headers, validate_pcap_timestamps
+            )
+            
+            pcap_path = ui.merged_pcap_to_validate
+            print(f"\nValidating merged PCAP: {pcap_path}\n")
+            
+            # Run all validations
+            all_passed = True
+            
+            # 1. Magic number check
+            magic_res = validate_pcap_magic(pcap_path)
+            print("PCAP Magic Number Check:")
+            print(f"  ok: {magic_res.get('ok')}")
+            if magic_res.get('ok'):
+                print(f"  type: {magic_res.get('type')}")
+                print(f"  magic: 0x{magic_res.get('magic', '')}")
+            else:
+                print(f"  reason: {magic_res.get('reason')}")
+                all_passed = False
+            print()
+            
+            # 2. Snaplen check
+            snaplen_res = validate_pcap_snaplen(pcap_path)
+            print("PCAP Snaplen Check:")
+            print(f"  snaplen: {snaplen_res.get('snaplen')} bytes")
+            print(f"  max packet size: {snaplen_res.get('max_packet_size')} bytes")
+            print(f"  ok: {snaplen_res.get('ok')}")
+            if not snaplen_res.get('ok'):
+                print(f"  reason: {snaplen_res.get('reason')}")
+                all_passed = False
+            print()
+            
+            # 3. Packet header integrity
+            header_res = validate_pcap_packet_headers(pcap_path)
+            print("PCAP Packet Header Integrity Check:")
+            print(f"  total packets scanned: {header_res.get('total_packets')}")
+            print(f"  ok: {header_res.get('ok')}")
+            if not header_res.get('ok'):
+                errors = header_res.get('errors', [])
+                if errors:
+                    print(f"  errors found: {len(errors)}")
+                    for err in errors[:5]:
+                        print(f"    packet {err['packet_num']}: {err['issue']} - {err['details']}")
+                    if len(errors) > 5:
+                        print(f"    ... and {len(errors) - 5} more errors")
+                elif 'reason' in header_res:
+                    print(f"  reason: {header_res.get('reason')}")
+                all_passed = False
+            print()
+            
+            # 4. Timestamp validation
+            timestamp_res = validate_pcap_timestamps(pcap_path)
+            print("PCAP Timestamp Validation:")
+            print(f"  ok: {timestamp_res.get('ok')}")
+            summary = timestamp_res.get('summary', {})
+            if summary:
+                print(f"  total timestamps: {summary.get('total_timestamps')} packets")
+                print(f"  span: {summary.get('span_seconds'):.6f} seconds")
+            
+            consecutive_gaps = timestamp_res.get('consecutive_gaps', [])
+            outliers = timestamp_res.get('outliers', [])
+            
+            if consecutive_gaps:
+                print(f"  consecutive gaps detected: {len(consecutive_gaps)}")
+                for gap in consecutive_gaps[:3]:
+                    print(f"    gap between packet {gap['index_before']} -> {gap['index_after']}: {gap['gap_seconds']:.6f}s")
+            
+            if outliers:
+                print(f"  outlier packets detected: {len(outliers)}")
+                for outlier in outliers[:3]:
+                    print(f"    packet {outlier['index']}: delta={outlier['delta_seconds']:.6f}s")
+            
+            if not timestamp_res.get('ok'):
+                all_passed = False
+            
+            print("\n" + "="*80)
+            if all_passed:
+                print("VALIDATION PASSED: All checks successful!")
+            else:
+                print("VALIDATION FAILED: Some checks did not pass")
+            print("="*80 + "\n")
         
     except Exception as e:
         print(f"Error running curses UI: {e}")
