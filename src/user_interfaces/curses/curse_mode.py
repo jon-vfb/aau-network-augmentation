@@ -900,10 +900,52 @@ Enter new value (or press ESC to keep current):
                     break
             
             if all_filled:
-                # Move to config screen for project name, IP range, jitter
-                self.mode = "augmentation_config"
-                self.menu_selected = 0
-                self.status_message = "Configure augmentation options"
+                # For attack-only generation, ask for project name only
+                augmentation_type = self.logic.augmentation_state.get('augmentation_type', 'merge')
+                if augmentation_type == 'attack':
+                    # Ask only for project name (attack file name)
+                    self.layout.clear_screen()
+                    self.layout.draw_header("Attack Generation - Enter Project Name")
+                    self.layout.draw_text_box(
+                        "Project Name (this will be the attack file name)\n"
+                        "Alphanumeric, underscore, hyphen, space allowed\n"
+                        "Example: port_scan_attack or arp_spoof_001\n"
+                        "(Max 100 characters)\n\n"
+                        "Leave blank to cancel\n", 
+                        4, 2
+                    )
+                    project_name = self.layout.get_text_input(12, 2, "Attack File Name: ", 100)
+                    
+                    if project_name is None or project_name.strip() == "":
+                        self.status_message = "Configuration cancelled"
+                        return True
+                    
+                    # Validate project name
+                    from features.augmentations import InputValidator
+                    validator = InputValidator()
+                    is_valid, error_msg = validator.validate_project_name(project_name)
+                    if not is_valid:
+                        self.status_message = f"Invalid file name: {error_msg}"
+                        return True
+                    
+                    # Set project name and go directly to confirmation
+                    success = self.logic.set_augmentation_config(
+                        project_name=project_name.strip(),
+                        ip_translation_range=None,
+                        jitter_max=0.1
+                    )
+                    
+                    if success:
+                        self.mode = "augmentation_confirm_attack_only"
+                        self.menu_selected = 0
+                        self.status_message = "Configuration complete - Confirm to proceed"
+                    else:
+                        self.status_message = f"Error: {self.logic.last_error}"
+                else:
+                    # For merge workflows, move to full config screen for project name, IP range, jitter
+                    self.mode = "augmentation_config"
+                    self.menu_selected = 0
+                    self.status_message = "Configure augmentation options"
         
         return True
     
