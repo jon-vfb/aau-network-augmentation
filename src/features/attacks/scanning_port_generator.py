@@ -15,10 +15,18 @@ def generate_port_scan(target_ip: str, ports_to_scan: List[int], attacker_ip: st
     
     for i, port in enumerate(ports_to_scan):
         random_source_port = random.randint(1024, 65535)  # Generate actual integer
-        seq_num = random.randint(0, 2**32 - 1)  # Random initial sequence number
+        
+        # --- SEQUENCE NUMBER LOGIC ---
+        # Generate random 32-bit Sequence Number for the client (Attacker)
+        client_seq = random.randint(0, 4294967295)
         
         # Generation of the SYN packet
-        syn_packet = IP(src=attacker_ip, dst=target_ip) / TCP(sport=random_source_port, dport=port, flags="S", seq=seq_num)
+        syn_packet = IP(src=attacker_ip, dst=target_ip) / TCP(
+            sport=random_source_port, 
+            dport=port, 
+            flags="S", 
+            seq=client_seq # Set explicit client sequence number
+        )
         
         # Delete checksums so Scapy recalculates them correctly
         del syn_packet[IP].chksum
@@ -33,14 +41,16 @@ def generate_port_scan(target_ip: str, ports_to_scan: List[int], attacker_ip: st
         response_time = syn_packet.time + simulated_rtt 
 
         if port in open_ports:
-            response_seq = random.randint(0, 2**32 - 1)  # Server's initial sequence number
+            # --- SEQUENCE NUMBER LOGIC ---
+            # Generate random 32-bit Sequence Number for the server (Victim)
+            server_seq = random.randint(0, 4294967295)
             
             syn_ack_packet = IP(src=target_ip, dst=attacker_ip) / TCP(
                 sport=port,
                 dport=random_source_port,
                 flags="SA",
-                ack=seq_num + 1,  # Acknowledge client's SYN
-                seq=response_seq
+                ack=client_seq + 1,  # Acknowledge client's SYN (ISN + 1)
+                seq=server_seq       # Set explicit server sequence number
             )
             
             # Recalculate checksums
@@ -56,10 +66,11 @@ def generate_port_scan(target_ip: str, ports_to_scan: List[int], attacker_ip: st
                 sport=random_source_port,
                 dport=port,
                 flags="R",  # Flag Reset
-                seq=seq_num + 1  # Next expected sequence from client
+                ack=server_seq + 1, # Acknowledge server's SYN-ACK
+                seq=client_seq + 1  # Next expected sequence from client
             )
             
-            # Recalculate checksums
+            # Allow Scapy to calculate checksums automatically
             del rst_packet[IP].chksum
             del rst_packet[TCP].chksum
             rst_packet = IP(bytes(rst_packet))
@@ -73,11 +84,11 @@ def generate_port_scan(target_ip: str, ports_to_scan: List[int], attacker_ip: st
                 sport=port,
                 dport=random_source_port,
                 flags="RA",  # Flag Reset-Ack
-                ack=seq_num + 1,  # Acknowledge the SYN
+                ack=client_seq + 1,  # Acknowledge the SYN (ISN + 1)
                 seq=0  # No sequence number for RST-ACK
             )
             
-            # Recalculate checksums
+            # Allow Scapy to calculate checksums automatically
             del rst_ack_packet[IP].chksum
             del rst_ack_packet[TCP].chksum
             rst_ack_packet = IP(bytes(rst_ack_packet))
