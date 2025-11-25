@@ -18,14 +18,16 @@ def generate_port_scan(target_ip: str, ports_to_scan: List[int], attacker_ip: st
         
         # --- SEQUENCE NUMBER LOGIC ---
         # Generate random 32-bit Sequence Number for the client (Attacker)
-        client_seq = random.randint(0, 4294967295)
+        client_seq = random.randint(1000000, 4294967295)
         
         # Generation of the SYN packet
         syn_packet = IP(src=attacker_ip, dst=target_ip) / TCP(
             sport=random_source_port, 
             dport=port, 
             flags="S", 
-            seq=client_seq # Set explicit client sequence number
+            seq=client_seq,  # Set explicit client sequence number
+            ack=0,  # Initial SYN must have ack=0
+            window=64240  # Standard TCP window size
         )
         
         # Delete checksums so Scapy recalculates them correctly
@@ -66,8 +68,9 @@ def generate_port_scan(target_ip: str, ports_to_scan: List[int], attacker_ip: st
                 sport=random_source_port,
                 dport=port,
                 flags="R",  # Flag Reset
-                ack=server_seq + 1, # Acknowledge server's SYN-ACK
-                seq=client_seq + 1  # Next expected sequence from client
+                seq=client_seq + 1,  # Next expected sequence from client
+                ack=0,  # RST packets typically don't acknowledge
+                window=0  # Window should be 0 for RST packets
             )
             
             # Allow Scapy to calculate checksums automatically
@@ -85,7 +88,7 @@ def generate_port_scan(target_ip: str, ports_to_scan: List[int], attacker_ip: st
                 dport=random_source_port,
                 flags="RA",  # Flag Reset-Ack
                 ack=client_seq + 1,  # Acknowledge the SYN (ISN + 1)
-                seq=0  # No sequence number for RST-ACK
+                seq=0  # Sequence number for RST-ACK (0 for unsolicited RST)
             )
             
             # Allow Scapy to calculate checksums automatically
