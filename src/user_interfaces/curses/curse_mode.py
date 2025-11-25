@@ -146,6 +146,8 @@ class PcapCursesUI:
     
     def draw_pcap_list_screen(self):
         """Draw the PCAP file list screen"""
+        # Refresh the pcap list to pick up any new files
+        self.logic.scan_for_pcaps()
         self.layout.draw_header("PCAP Network Analyzer - File Selection")
         self.layout.draw_pcap_list(self.logic.available_pcaps, self.selected_index, self.scroll_offset)
         self.layout.draw_help_bar("↑↓: Navigate | Enter: Select | ESC: Back | q: Quit")
@@ -450,6 +452,8 @@ class PcapCursesUI:
     
     def draw_augmentation_benign_select_screen(self):
         """Draw the benign PCAP selection screen"""
+        # Refresh the pcap list to pick up any new files
+        self.logic.scan_for_pcaps()
         self.layout.draw_header("Augmentation - Select Benign PCAP")
         self.layout.draw_pcap_list(self.logic.available_pcaps, self.selected_index, self.scroll_offset)
         self.layout.draw_help_bar("↑↓: Navigate | Enter: Select | ESC: Cancel | q: Quit")
@@ -457,6 +461,8 @@ class PcapCursesUI:
     
     def draw_augmentation_malicious_select_screen(self):
         """Draw the malicious PCAP selection screen"""
+        # Refresh the pcap list to pick up any new files
+        self.logic.scan_for_pcaps()
         self.layout.draw_header("Augmentation - Select Malicious PCAP")
         self.layout.draw_pcap_list(self.logic.available_pcaps, self.selected_index, self.scroll_offset)
         self.layout.draw_help_bar("↑↓: Navigate | Enter: Select | ESC: Cancel | q: Quit")
