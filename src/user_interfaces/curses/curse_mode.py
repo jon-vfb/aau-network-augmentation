@@ -1364,6 +1364,13 @@ def run_curses_ui():
             else:
                 print("VALIDATION FAILED: Some checks did not pass")
             print("="*80 + "\n")
+            
+            # Prompt user to return to main menu
+            input("Press Enter to return to the main menu...")
+            
+            # Restart the curses UI
+            ui_restart = PcapCursesUI()
+            curses.wrapper(ui_restart.run)
         
     except Exception as e:
         print(f"Error running curses UI: {e}")
