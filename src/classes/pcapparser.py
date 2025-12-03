@@ -851,3 +851,61 @@ class pcapparser:
                 }
         
         return analysis
+    
+    def get_ip_range(self) -> Optional[str]:
+        """
+        Extract the most common IP range from the PCAP file.
+        Returns a CIDR notation string representing the primary network range.
+        
+        Returns:
+            Optional[str]: IP range in CIDR notation (e.g., '192.168.1.0/24') or None if no IPs found
+        """
+        if not self._loaded:
+            self.load()
+        
+        from ipaddress import ip_address, ip_network, IPv4Address
+        
+        ip_set = set()
+        
+        # Collect all unique IPs
+        for pkt in self.packets:
+            if pkt.haslayer(IP):
+                try:
+                    src = ip_address(pkt[IP].src)
+                    dst = ip_address(pkt[IP].dst)
+                    
+                    # Only consider IPv4 addresses in private ranges or non-loopback
+                    if isinstance(src, IPv4Address) and not src.is_loopback:
+                        ip_set.add(str(src))
+                    if isinstance(dst, IPv4Address) and not dst.is_loopback:
+                        ip_set.add(str(dst))
+                except:
+                    continue
+        
+        if not ip_set:
+            return None
+        
+        # Find the smallest network that contains most IPs
+        # Try common subnet sizes from /24 to /16
+        best_network = None
+        best_coverage = 0
+        
+        for ip_str in ip_set:
+            for prefix_len in [24, 23, 22, 21, 20, 19, 18, 17, 16]:
+                try:
+                    # Create network from this IP with the prefix length
+                    test_network = ip_network(f"{ip_str}/{prefix_len}", strict=False)
+                    
+                    # Count how many IPs from our set fall in this network
+                    coverage = sum(1 for ip in ip_set if ip_address(ip) in test_network)
+                    
+                    # Prefer smaller networks with good coverage (at least 50% of IPs)
+                    coverage_ratio = coverage / len(ip_set)
+                    if coverage_ratio >= 0.5 and coverage > best_coverage:
+                        best_network = test_network
+                        best_coverage = coverage
+                        break  # Found good network for this IP, try next
+                except:
+                    continue
+        
+        return str(best_network) if best_network else None
