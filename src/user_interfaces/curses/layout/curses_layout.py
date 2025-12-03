@@ -669,10 +669,21 @@ class CursesLayout:
             if y_pos < height - 2:
                 self.stdscr.addstr(y_pos, x_start, line[:width-x_start-2], self.get_color_pair(7))
     
-    def get_text_input(self, y: int, x: int, prompt: str = "", max_length: int = 100) -> Optional[str]:
+    def get_text_input(self, y: int, x: int, prompt: str = "", max_length: int = 100, 
+                       validator_func=None, validation_hint: str = "") -> Optional[str]:
         """
         Get text input from user at specified position.
-        Returns the input string or None if ESC was pressed.
+        
+        Args:
+            y: Y position
+            x: X position
+            prompt: Prompt text to display
+            max_length: Maximum input length
+            validator_func: Optional function(str) -> Tuple[bool, str] that returns (is_valid, error_msg)
+            validation_hint: Hint text to show below input
+            
+        Returns:
+            The input string or None if ESC was pressed.
         """
         import curses
         
@@ -684,6 +695,7 @@ class CursesLayout:
         
         # Input buffer
         input_str = ""
+        validation_error = ""
         
         # Show cursor
         curses.curs_set(1)
@@ -704,6 +716,20 @@ class CursesLayout:
                         # Show placeholder when empty
                         self.stdscr.addstr(y, input_x, "_", curses.A_DIM)
                 
+                # Show validation hint or error below input
+                hint_y = y + 1
+                if hint_y < height - 3:
+                    clear_line = " " * (width - x - 2)
+                    self.stdscr.addstr(hint_y, x, clear_line)
+                    if validation_error:
+                        error_text = f"✗ {validation_error}"
+                        if len(error_text) < width - x - 2:
+                            self.stdscr.addstr(hint_y, x, error_text, self.get_color_pair(1))  # Red
+                    elif validation_hint and not input_str:
+                        hint_text = f"ℹ {validation_hint}"
+                        if len(hint_text) < width - x - 2:
+                            self.stdscr.addstr(hint_y, x, hint_text, curses.A_DIM)
+                
                 # Position cursor at end of input (or at start if empty)
                 cursor_x = input_x + len(input_str)
                 if cursor_x >= width - 1:
@@ -720,12 +746,20 @@ class CursesLayout:
                 elif key == curses.KEY_BACKSPACE or key == 8 or key == 127:  # Backspace
                     if input_str:
                         input_str = input_str[:-1]
+                        validation_error = ""  # Clear error on edit
                 elif key == ord('\n') or key == 10 or key == 13:  # Enter
+                    # Validate before accepting
+                    if validator_func:
+                        is_valid, error_msg = validator_func(input_str)
+                        if not is_valid:
+                            validation_error = error_msg
+                            continue  # Don't accept, show error
                     curses.curs_set(0)
                     return input_str
                 elif 32 <= key <= 126:  # Printable characters
                     if len(input_str) < max_length:
                         input_str += chr(key)
+                        validation_error = ""  # Clear error on edit
         except KeyboardInterrupt:
             curses.curs_set(0)
             return None

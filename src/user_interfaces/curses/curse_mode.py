@@ -872,8 +872,57 @@ Enter new value (or press ESC to keep current):
             
             self.layout.draw_text_box(prompt_text, 3, 2)
             
-            # Get user input using the layout's text input method
-            new_value = self.layout.get_text_input(15, 2, f"{param_name}: ", 100)
+            # Create validator based on parameter type
+            def validate_param(value: str):
+                if not value.strip() and current_param.get('required'):
+                    return False, "This parameter is required"
+                if not value.strip():
+                    return True, ""  # Allow empty for optional params
+                
+                # Type-specific validation
+                if param_type == 'int':
+                    try:
+                        int(value)
+                        return True, ""
+                    except ValueError:
+                        return False, "Must be an integer number"
+                elif param_type == 'float':
+                    try:
+                        float(value)
+                        return True, ""
+                    except ValueError:
+                        return False, "Must be a decimal number"
+                elif param_type == 'ip':
+                    parts = value.split('.')
+                    if len(parts) != 4:
+                        return False, "IP must have 4 octets (x.x.x.x)"
+                    try:
+                        if all(0 <= int(part) <= 255 for part in parts):
+                            return True, ""
+                        return False, "Each octet must be 0-255"
+                    except ValueError:
+                        return False, "Each octet must be a number"
+                elif param_type == 'ports':
+                    try:
+                        for part in value.split(','):
+                            part = part.strip()
+                            if '-' in part:
+                                start, end = part.split('-')
+                                if not (1 <= int(start) <= 65535 and 1 <= int(end) <= 65535):
+                                    return False, "Port numbers must be 1-65535"
+                            else:
+                                if not (1 <= int(part) <= 65535):
+                                    return False, "Port numbers must be 1-65535"
+                        return True, ""
+                    except ValueError:
+                        return False, "Invalid port format. Use: 80,443 or 1-1024"
+                return True, ""
+            
+            # Get user input using the layout's text input method with validation
+            validation_hint = current_param.get('validation_hint', '')
+            new_value = self.layout.get_text_input(15, 2, f"{param_name}: ", 100, 
+                                                   validator_func=validate_param,
+                                                   validation_hint=validation_hint)
             
             if new_value is not None and new_value.strip():
                 # Update the parameter value
@@ -914,18 +963,19 @@ Enter new value (or press ESC to keep current):
                         "Leave blank to cancel\n", 
                         4, 2
                     )
-                    project_name = self.layout.get_text_input(12, 2, "Attack File Name: ", 100)
+                    
+                    # Validate project name inline
+                    from features.augmentations import InputValidator
+                    validator = InputValidator()
+                    
+                    project_name = self.layout.get_text_input(
+                        12, 2, "Attack File Name: ", 100,
+                        validator_func=lambda v: (True, "") if not v.strip() else validator.validate_project_name(v),
+                        validation_hint="Letters, numbers, _, -, and spaces only"
+                    )
                     
                     if project_name is None or project_name.strip() == "":
                         self.status_message = "Configuration cancelled"
-                        return True
-                    
-                    # Validate project name
-                    from features.augmentations import InputValidator
-                    validator = InputValidator()
-                    is_valid, error_msg = validator.validate_project_name(project_name)
-                    if not is_valid:
-                        self.status_message = f"Invalid file name: {error_msg}"
                         return True
                     
                     # Set project name and go directly to confirmation
@@ -1092,17 +1142,18 @@ Ready to generate attack traffic?
             "Leave blank to cancel\n", 
             4, 2
         )
-        project_name = self.layout.get_text_input(12, 2, "Project Name: ", 100)
+        
+        # Validate project name inline
+        validator = InputValidator()
+        
+        project_name = self.layout.get_text_input(
+            12, 2, "Project Name: ", 100,
+            validator_func=lambda v: (True, "") if not v.strip() else validator.validate_project_name(v),
+            validation_hint="Letters, numbers, _, -, and spaces only"
+        )
         
         if project_name is None or project_name.strip() == "":
             self.status_message = "Configuration cancelled"
-            return
-        
-        # Validate project name
-        validator = InputValidator()
-        is_valid, error_msg = validator.validate_project_name(project_name)
-        if not is_valid:
-            self.status_message = f"Invalid project name: {error_msg}"
             return
         
         # For attack-only mode, only ask for project name
@@ -1133,7 +1184,12 @@ Ready to generate attack traffic?
             "Leave blank to skip IP translation\n",
             4, 2
         )
-        ip_range = self.layout.get_text_input(12, 2, "IP Range (optional): ", 50)
+        
+        ip_range = self.layout.get_text_input(
+            12, 2, "IP Range (optional): ", 50,
+            validator_func=lambda v: validator.validate_ip_range(v),
+            validation_hint="Format: x.x.x.x/y (e.g., 192.168.1.0/24)"
+        )
         
         if ip_range is None:
             self.status_message = "Configuration cancelled"
@@ -1149,25 +1205,24 @@ Ready to generate attack traffic?
             "Press ENTER for default (0.1 seconds)\n",
             4, 2
         )
-        jitter_str = self.layout.get_text_input(12, 2, "Jitter (seconds): ", 10)
+        
+        def validate_jitter_wrapper(v: str):
+            is_valid, jitter_val, error_msg = validator.validate_jitter(v)
+            return (is_valid, error_msg)
+        
+        jitter_str = self.layout.get_text_input(
+            12, 2, "Jitter (seconds): ", 10,
+            validator_func=validate_jitter_wrapper,
+            validation_hint="Number between 0 and 10 (default: 0.1)"
+        )
         
         if jitter_str is None:
             self.status_message = "Configuration cancelled"
             return
         
-        # Validate IP range
-        if ip_range and ip_range.strip():
-            is_valid, error_msg = validator.validate_ip_range(ip_range)
-            if not is_valid:
-                self.status_message = f"Invalid IP range: {error_msg}"
-                return
-        
-        # Validate jitter
+        # Parse jitter value (already validated)
         if jitter_str.strip():
             is_valid, jitter_value, error_msg = validator.validate_jitter(jitter_str)
-            if not is_valid:
-                self.status_message = f"Invalid jitter value: {error_msg}"
-                return
         else:
             jitter_value = 0.1
         
