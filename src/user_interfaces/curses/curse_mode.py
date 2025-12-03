@@ -1289,8 +1289,9 @@ Ready to generate attack traffic?
                 self.merged_pcap_to_validate = results.get('merged_pcap')
                 return False  # Exit curses mode
             else:
-                self.mode = "pcap_info"
-                self.status_message = "Back to PCAP info"
+                self.mode = "main_menu"
+                self.selected_index = 0
+                self.status_message = "Back to main menu"
         
         return True
     
