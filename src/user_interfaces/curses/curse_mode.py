@@ -570,10 +570,14 @@ Navigation: q=Quit | ESC=Back | ENTER=Input mode
         state = self.logic.get_augmentation_state()
         benign = os.path.basename(state.get('benign_pcap', 'Not selected'))
         malicious = os.path.basename(state.get('malicious_pcap', 'Not selected'))
+        benign_ip_range = state.get('benign_ip_range', 'Unknown')
+        malicious_ip_range = state.get('malicious_ip_range', 'Unknown')
         
         confirm_text = f"""
 Benign PCAP:             {benign}
+  IP Range:              {benign_ip_range}
 Malicious PCAP:          {malicious}
+  IP Range:              {malicious_ip_range}
 Project Name:            {state.get('project_name', 'Not set')}
 IP Translation Range:    {state.get('ip_translation_range', 'None')}
 Jitter Max (seconds):    {state.get('jitter_max', 0.1)}
@@ -596,6 +600,7 @@ Confirm to start augmentation process?
         
         state = self.logic.get_augmentation_state()
         benign = os.path.basename(state.get('benign_pcap', 'Not selected'))
+        benign_ip_range = state.get('benign_ip_range', 'Unknown')
         attack_config = self.logic.get_attack_config_state()
         attack_name = attack_config.get('attack_name', 'Unknown') if attack_config else 'Not selected'
         
@@ -613,6 +618,7 @@ Confirm to start augmentation process?
         
         confirm_text = f"""
 Benign PCAP:             {benign}
+  IP Range:              {benign_ip_range}
 Attack Type:             {attack_name}
 Project Name:            {state.get('project_name', 'Not set')}
 IP Translation Range:    {state.get('ip_translation_range', 'None')}
@@ -1176,17 +1182,32 @@ Ready to generate attack traffic?
         # IP range
         self.layout.clear_screen()
         self.layout.draw_header("Augmentation - Enter IP Translation Range")
-        self.layout.draw_text_box(
-            "IP Translation Range (CIDR notation, optional)\n"
+        
+        # Get IP ranges from both files and default range
+        state = self.logic.augmentation_state
+        benign_ip_range = state.get('benign_ip_range', 'Unknown')
+        malicious_ip_range = state.get('malicious_ip_range', 'Unknown')
+        default_ip_range = self.logic.get_default_ip_translation_range()
+        
+        # Build information text with IP ranges
+        info_text = (
+            "IP Translation Range (CIDR notation, optional)\n\n"
+            f"Benign file IP range:    {benign_ip_range}\n"
+            f"Malicious file IP range: {malicious_ip_range}\n\n"
             "Example: 192.168.100.0/24\n"
             "Example: 10.50.0.0/16\n"
             "Subnet size: /8 to /25\n\n"
-            "Leave blank to skip IP translation\n",
-            4, 2
         )
         
+        if default_ip_range:
+            info_text += f"Press ENTER for default ({default_ip_range})\n"
+        else:
+            info_text += "Leave blank to skip IP translation\n"
+        
+        self.layout.draw_text_box(info_text, 4, 2)
+        
         ip_range = self.layout.get_text_input(
-            12, 2, "IP Range (optional): ", 50,
+            18, 2, "IP Range (optional): ", 50,
             validator_func=lambda v: validator.validate_ip_range(v),
             validation_hint="Format: x.x.x.x/y (e.g., 192.168.1.0/24)"
         )
@@ -1194,6 +1215,10 @@ Ready to generate attack traffic?
         if ip_range is None:
             self.status_message = "Configuration cancelled"
             return
+        
+        # Use default if empty and default is available
+        if not ip_range.strip() and default_ip_range:
+            ip_range = default_ip_range
         
         # Jitter
         self.layout.clear_screen()

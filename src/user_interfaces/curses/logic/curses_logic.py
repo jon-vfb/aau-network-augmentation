@@ -1,6 +1,10 @@
 import os
 import sys
 from typing import List, Optional, Dict, Any
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Add the src directory to the path to import pcapparser
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'src'))
@@ -284,6 +288,8 @@ class CursesLogic:
             'step': 1,  # Step tracking: 1=benign selection, 2=malicious, 3=config, 4=confirm, 5=running
             'benign_pcap': None,
             'malicious_pcap': None,
+            'benign_ip_range': None,
+            'malicious_ip_range': None,
             'project_name': None,
             'ip_translation_range': None,
             'jitter_max': 0.1,
@@ -298,6 +304,17 @@ class CursesLogic:
         if not os.path.exists(pcap_path):
             self.last_error = f"File not found: {pcap_path}"
             return False
+        
+        # Extract IP range from benign PCAP
+        try:
+            parser = pcapparser(pcap_path)
+            parser.load()
+            benign_ip_range = parser.get_ip_range()
+            self.augmentation_state['benign_ip_range'] = benign_ip_range
+        except Exception as e:
+            self.last_error = f"Error extracting IP range: {e}"
+            self.augmentation_state['benign_ip_range'] = None
+        
         self.augmentation_state['benign_pcap'] = pcap_path
         self.augmentation_state['step'] = 2
         return True
@@ -310,9 +327,36 @@ class CursesLogic:
         if not os.path.exists(pcap_path):
             self.last_error = f"File not found: {pcap_path}"
             return False
+        
+        # Extract IP range from malicious PCAP
+        try:
+            parser = pcapparser(pcap_path)
+            parser.load()
+            malicious_ip_range = parser.get_ip_range()
+            self.augmentation_state['malicious_ip_range'] = malicious_ip_range
+        except Exception as e:
+            self.last_error = f"Error extracting IP range: {e}"
+            self.augmentation_state['malicious_ip_range'] = None
+        
         self.augmentation_state['malicious_pcap'] = pcap_path
         self.augmentation_state['step'] = 3
         return True
+    
+    def get_default_ip_translation_range(self) -> Optional[str]:
+        """
+        Get the default IP translation range based on AUTO_IP_TRANSLATION env variable.
+        Returns the benign file's IP range if auto translation is enabled.
+        
+        Returns:
+            Optional[str]: Default IP range in CIDR notation or None
+        """
+        # Check if AUTO_IP_TRANSLATION is enabled
+        auto_translate = os.getenv('AUTO_IP_TRANSLATION', '').lower() in ('true', '1', 'yes', 'on')
+        
+        if auto_translate and self.augmentation_state.get('benign_ip_range'):
+            return self.augmentation_state['benign_ip_range']
+        
+        return None
     
     def set_augmentation_config(self, project_name: str, 
                                 ip_translation_range: Optional[str] = None, 
@@ -402,6 +446,7 @@ class CursesLogic:
             'augmentation_type': 'attack',
             'step': 1,  # Step tracking: 1=attack selection, 2=config, 3=confirm, 4=running
             'project_name': None,
+            'benign_ip_range': None,
         }
         self.attack_config_state = {}
         return self.augmentation_state

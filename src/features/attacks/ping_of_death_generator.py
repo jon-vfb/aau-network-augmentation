@@ -156,12 +156,65 @@ def generate_ping_of_death(
     return packets
 
 
+def generate_unanswered_pings(
+    source_ip: str,
+    target_ip: str,
+    num_pings: int,
+    base_time: float,
+    sequence_start: int = 2000,
+    source_mac: str = "00:0c:29:1d:84:e1",
+    target_mac: str = "00:0c:29:2a:3f:b2"
+) -> List:
+    """
+    Generate ICMP echo requests with no replies (victim is down).
+    
+    Args:
+        source_ip: IP address of the source (attacker)
+        target_ip: IP address of the target (victim - now down)
+        num_pings: Number of unanswered pings to generate
+        base_time: Starting timestamp
+        sequence_start: Starting sequence number for ICMP packets
+        source_mac: Source MAC address (default: VMware OUI)
+        target_mac: Target MAC address (default: VMware OUI)
+        
+    Returns:
+        List of unanswered ICMP echo requests
+    """
+    packets = []
+    current_time = base_time
+    
+    for i in range(num_pings):
+        seq_num = sequence_start + i
+        
+        # ICMP Echo Request (Type 8, Code 0) - NO REPLY because victim is down
+        echo_request = Ether(src=source_mac, dst=target_mac) / IP(src=source_ip, dst=target_ip) / ICMP(
+            type=8,  # Echo Request
+            code=0,
+            id=random.randint(1, 65535),
+            seq=seq_num
+        ) / (b'abcdefghijklmnopqrstuvwabcdefghi')  # 32 bytes of data (standard ping payload)
+        
+        # Recalculate checksums
+        del echo_request[IP].chksum
+        del echo_request[ICMP].chksum
+        echo_request = Ether(bytes(echo_request))
+        
+        echo_request.time = current_time
+        packets.append(echo_request)
+        
+        # Wait before next ping attempt (typically 1 second between pings)
+        current_time += random.uniform(0.95, 1.05)
+    
+    return packets
+
+
 def generate_ping_of_death_attack(
     attacker_ip: str,
     victim_ip: str,
     num_normal_pings: int = 5,
     payload_size: int = 70000,
-    num_malicious: int = 1
+    num_malicious: int = 1,
+    num_unanswered_pings: int = 3
 ) -> List:
     """
     Generate a complete Ping of Death attack scenario.
@@ -169,6 +222,7 @@ def generate_ping_of_death_attack(
     This creates:
     1. Normal ping exchanges (to establish baseline traffic)
     2. The Ping of Death attack (oversized fragmented ICMP)
+    3. Unanswered pings (victim is down, no replies)
     
     Args:
         attacker_ip: IP address of the attacker
@@ -176,9 +230,10 @@ def generate_ping_of_death_attack(
         num_normal_pings: Number of normal pings before the attack
         payload_size: Size of malicious payload (default 70000 bytes)
         num_malicious: Number of malicious ping attacks to send
+        num_unanswered_pings: Number of unanswered pings after attack (default 3)
         
     Returns:
-        List of all packets (normal + attack)
+        List of all packets (normal + attack + unanswered)
     """
     all_packets = []
     base_time = time.time()
@@ -212,6 +267,21 @@ def generate_ping_of_death_attack(
         # If multiple attacks, space them out
         if attack_packets and i < num_malicious - 1:
             base_time = attack_packets[-1].time + random.uniform(1.0, 3.0)
+    
+    # Update base_time for unanswered pings
+    if attack_packets:
+        base_time = attack_packets[-1].time + random.uniform(0.5, 1.5)
+    
+    # Generate unanswered pings (victim is down)
+    if num_unanswered_pings > 0:
+        unanswered_packets = generate_unanswered_pings(
+            source_ip=attacker_ip,
+            target_ip=victim_ip,
+            num_pings=num_unanswered_pings,
+            base_time=base_time,
+            sequence_start=2000
+        )
+        all_packets.extend(unanswered_packets)
     
     return all_packets
 
@@ -263,6 +333,14 @@ class PingOfDeathAttack(AttackBase):
             default=1,
             validation_hint="Default: 1 attack"
         ),
+        AttackParameter(
+            name="num_unanswered_pings",
+            param_type="int",
+            description="Number of unanswered pings after attack (victim is down)",
+            required=False,
+            default=3,
+            validation_hint="Default: 3 unanswered pings to show victim is offline"
+        ),
     ]
     
     def generate(self, parameters: Dict[str, Any], output_path: str) -> bool:
@@ -287,6 +365,7 @@ class PingOfDeathAttack(AttackBase):
             num_normal_pings = int(parameters.get('num_normal_pings', 5))
             payload_size = int(parameters.get('payload_size', 70000))
             num_malicious = int(parameters.get('num_malicious', 1))
+            num_unanswered_pings = int(parameters.get('num_unanswered_pings', 3))
             
             # Validate payload size
             if payload_size < 65508:
@@ -303,7 +382,8 @@ class PingOfDeathAttack(AttackBase):
                 victim_ip=victim_ip,
                 num_normal_pings=num_normal_pings,
                 payload_size=payload_size,
-                num_malicious=num_malicious
+                num_malicious=num_malicious,
+                num_unanswered_pings=num_unanswered_pings
             )
             
             if not packets:
@@ -347,7 +427,8 @@ if __name__ == "__main__":
         victim_ip=victim_ip,
         num_normal_pings=num_normal,
         payload_size=payload,
-        num_malicious=1
+        num_malicious=1,
+        num_unanswered_pings=3
     )
     
     wrpcap(output_file, packets)
