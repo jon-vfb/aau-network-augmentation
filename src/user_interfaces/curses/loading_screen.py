@@ -21,17 +21,20 @@ class LoadingScreen:
     
     # Default loading text (you can change this)
     DEFAULT_LOADING_TEXT = "Initializing Application"
+    DEFAULT_LOADING_TEXT_2 = "Please wait..."
     
-    def __init__(self, ascii_art=None, loading_text=None):
+    def __init__(self, ascii_art=None, loading_text=None, loading_text_2=None):
         """
         Initialize the loading screen.
         
         Args:
             ascii_art: Custom ASCII art to display (multiline string)
-            loading_text: Custom loading text to display
+            loading_text: Custom loading text to display (main subtitle)
+            loading_text_2: Custom loading text to display (secondary subtitle)
         """
         self.ascii_art = ascii_art if ascii_art is not None else self.DEFAULT_ASCII_ART
         self.loading_text = loading_text if loading_text is not None else self.DEFAULT_LOADING_TEXT
+        self.loading_text_2 = loading_text_2 if loading_text_2 is not None else self.DEFAULT_LOADING_TEXT_2
         self.running = False
         self.animation_thread = None
         self.stdscr = None
@@ -78,6 +81,15 @@ class LoadingScreen:
                     except curses.error:
                         pass
                 
+                # Draw secondary loading text
+                loading_y_2 = loading_y + 1
+                if loading_y_2 < height - 1:
+                    loading_x_2 = max(0, (width - len(self.loading_text_2)) // 2)
+                    try:
+                        self.stdscr.addstr(loading_y_2, loading_x_2, self.loading_text_2)
+                    except curses.error:
+                        pass
+                
                 self.stdscr.refresh()
                 
                 # Update dot count
@@ -118,14 +130,15 @@ class LoadingScreen:
         self.stdscr = None
 
 
-def show_loading_screen(initialization_func, ascii_art=None, loading_text=None):
+def show_loading_screen(initialization_func, ascii_art=None, loading_text=None, loading_text_2=None):
     """
     Show a loading screen while running an initialization function.
     
     Args:
         initialization_func: Function to run while showing the loading screen
         ascii_art: Custom ASCII art to display
-        loading_text: Custom loading text to display
+        loading_text: Custom loading text to display (main subtitle)
+        loading_text_2: Custom loading text to display (secondary subtitle)
         
     Returns:
         The result of initialization_func
@@ -135,7 +148,7 @@ def show_loading_screen(initialization_func, ascii_art=None, loading_text=None):
     
     def run_with_loading(stdscr):
         # Create and start loading screen
-        loading = LoadingScreen(ascii_art=ascii_art, loading_text=loading_text)
+        loading = LoadingScreen(ascii_art=ascii_art, loading_text=loading_text, loading_text_2=loading_text_2)
         loading.start(stdscr)
         
         # Run initialization in a separate thread

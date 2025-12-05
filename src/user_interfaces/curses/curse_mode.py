@@ -1353,22 +1353,34 @@ def run_curses_ui():
     
     # Customizable ASCII art and loading text
     # You can change these variables to customize the loading screen
+    # LOADING_ASCII_ART = r"""
+    # ╔═══════════════════════════════════════════════════════════╗
+    # ║                                                           ║
+    # ║   ██████╗  ██████╗ █████╗ ██████╗                        ║
+    # ║   ██╔══██╗██╔════╝██╔══██╗██╔══██╗                       ║
+    # ║   ██████╔╝██║     ███████║██████╔╝                       ║
+    # ║   ██╔═══╝ ██║     ██╔══██║██╔═══╝                        ║
+    # ║   ██║     ╚██████╗██║  ██║██║                            ║
+    # ║   ╚═╝      ╚═════╝╚═╝  ╚═╝╚═╝                            ║
+    # ║                                                           ║
+    # ║        Network Augmentation Tool                         ║
+    # ║                                                           ║
+    # ╚═══════════════════════════════════════════════════════════╝
+    # """
+
     LOADING_ASCII_ART = r"""
-    ╔═══════════════════════════════════════════════════════════╗
-    ║                                                           ║
-    ║   ██████╗  ██████╗ █████╗ ██████╗                        ║
-    ║   ██╔══██╗██╔════╝██╔══██╗██╔══██╗                       ║
-    ║   ██████╔╝██║     ███████║██████╔╝                       ║
-    ║   ██╔═══╝ ██║     ██╔══██║██╔═══╝                        ║
-    ║   ██║     ╚██████╗██║  ██║██║                            ║
-    ║   ╚═╝      ╚═════╝╚═╝  ╚═╝╚═╝                            ║
-    ║                                                           ║
-    ║        Network Augmentation Tool                         ║
-    ║                                                           ║
-    ╚═══════════════════════════════════════════════════════════╝
+ ___       __   ________  ___       __   ________      ___    ___ ________      
+|\  \     |\  \|\   __  \|\  \     |\  \|\   __  \    |\  \  /  /|\   ____\     
+\ \  \    \ \  \ \  \|\  \ \  \    \ \  \ \  \|\  \   \ \  \/  / | \  \___|_    
+ \ \  \  __\ \  \ \   __  \ \  \  __\ \  \ \   __  \   \ \    / / \ \_____  \   
+  \ \  \|\__\_\  \ \  \ \  \ \  \|\__\_\  \ \  \ \  \   \/  /  /   \|____|\  \  
+   \ \____________\ \__\ \__\ \____________\ \__\ \__\__/  / /       ____\_\  \ 
+    \|____________|\|__|\|__|\|____________|\|__|\|__|\___/ /       |\_________\
+                                                     \|___|/        \|_________|
     """
     
     LOADING_TEXT = "Loading Application"
+    LOADING_TEXT_2 = "What way are you taking?"
     
     def initialize_ui():
         """Initialize UI components with a minimum display time for loading screen"""
@@ -1384,7 +1396,7 @@ def run_curses_ui():
     
     try:
         # Show loading screen during initialization
-        loading_screen = LoadingScreen(ascii_art=LOADING_ASCII_ART, loading_text=LOADING_TEXT)
+        loading_screen = LoadingScreen(ascii_art=LOADING_ASCII_ART, loading_text=LOADING_TEXT, loading_text_2=LOADING_TEXT_2)
         ui = [None]
         exception = [None]
         
