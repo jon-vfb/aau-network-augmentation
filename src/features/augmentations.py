@@ -8,7 +8,7 @@ import sys
 import re
 import ipaddress
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict, Any
 
 # Ensure the repository's `src` directory is on sys.path
 _THIS_DIR = os.path.dirname(__file__)
@@ -18,6 +18,7 @@ if _SRC_DIR not in sys.path:
 
 from features.labeler import Labeler
 from features.merger.pcap_merger import PcapMerger
+from features.attacks import get_available_attacks, get_attack_instance
 
 
 class InputValidator:
@@ -348,6 +349,116 @@ class MergeAugmentation:
         print(f"{'='*80}\n")
 
 
+class AttackAndMergeAugmentation:
+    """Orchestrates attack generation and merging with a benign PCAP."""
+    
+    def __init__(self, project_name: str, output_base_dir: str = None):
+        """
+        Initialize the AttackAndMergeAugmentation.
+        
+        Args:
+            project_name (str): Name of the project (used for folder organization)
+            output_base_dir (str): Base directory for project output (defaults to src/features/augmentations)
+        """
+        self.project_name = project_name
+        
+        if output_base_dir is None:
+            output_base_dir = os.path.join(_SRC_DIR, "features", "augmentations")
+        
+        self.output_dir = os.path.join(output_base_dir, project_name)
+        self.labeler = Labeler()
+        self.merger = PcapMerger()
+    
+    def run(self, benign_pcap: str, attack_key: str, attack_parameters: Dict[str, Any],
+            ip_translation_range: Optional[str] = None, jitter_max: float = 0.1) -> dict:
+        """
+        Generate an attack PCAP and merge it with a benign PCAP.
+        
+        Args:
+            benign_pcap (str): Path to benign PCAP file
+            attack_key (str): Key of the attack to generate
+            attack_parameters (dict): Parameters specific to the attack
+            ip_translation_range (str): Optional CIDR range for IP translation
+            jitter_max (float): Maximum jitter in seconds
+            
+        Returns:
+            dict: Results dictionary
+        """
+        results = {
+            "success": False,
+            "project_name": self.project_name,
+            "project_dir": self.output_dir,
+            "messages": []
+        }
+        
+        try:
+            # Create project directory
+            os.makedirs(self.output_dir, exist_ok=True)
+            results["messages"].append(f"✓ Project directory: {self.output_dir}")
+            
+            # Generate attack PCAP
+            attack_pcap = os.path.join(self.output_dir, f"{self.project_name}_attack.pcap")
+            
+            results["messages"].append(f"\nGenerating {attack_key} attack...")
+            try:
+                attack_instance = get_attack_instance(attack_key)
+                if not attack_instance.generate(attack_parameters, attack_pcap):
+                    results["messages"].append(f"✗ Failed to generate attack PCAP")
+                    return results
+                results["messages"].append(f"✓ Generated attack PCAP: {attack_pcap}")
+            except Exception as e:
+                results["messages"].append(f"✗ Error generating attack: {e}")
+                return results
+            
+            # Now use MergeAugmentation to merge the attack with benign
+            results["messages"].append(f"\nMerging attack with benign PCAP...")
+            
+            merge_aug = MergeAugmentation(self.project_name, os.path.dirname(self.output_dir))
+            merge_results = merge_aug.run(
+                benign_pcap=benign_pcap,
+                malicious_pcap=attack_pcap,
+                ip_translation_range=ip_translation_range,
+                jitter_max=jitter_max
+            )
+            
+            # Merge the results
+            results["success"] = merge_results.get("success", False)
+            results["messages"].extend(merge_results.get("messages", []))
+            results.update({
+                "benign_csv": merge_results.get("benign_csv"),
+                "malicious_csv": merge_results.get("malicious_csv"),
+                "merged_pcap": merge_results.get("merged_pcap"),
+                "merged_csv": merge_results.get("merged_csv"),
+                "merge_statistics": merge_results.get("merge_statistics"),
+                "ip_translation_report": merge_results.get("ip_translation_report"),
+            })
+            
+        except Exception as e:
+            results["messages"].append(f"✗ Failed to complete augmentation: {e}")
+        
+        return results
+    
+    def print_results(self, results: dict):
+        """Print a formatted summary of augmentation results."""
+        print(f"\n{'='*80}")
+        print(f"Attack & Merge Augmentation Results: {results['project_name']}")
+        print(f"{'='*80}")
+        
+        for msg in results.get("messages", []):
+            print(msg)
+        
+        if results["success"]:
+            print(f"\nProject Directory: {results['project_dir']}")
+            print(f"Benign CSV (input): {results.get('benign_csv', 'N/A')}")
+            print(f"Malicious CSV (input): {results.get('malicious_csv', 'N/A')}")
+            print(f"Merged PCAP: {results.get('merged_pcap', 'N/A')}")
+            print(f"Merged CSV (output): {results.get('merged_csv', 'N/A')}")
+            if results.get("ip_translation_report"):
+                print(f"IP Translation Report: {results['ip_translation_report']}")
+        
+        print(f"{'='*80}\n")
+
+
 def merge_augmentation(benign_pcap: str, malicious_pcap: str, project_name: str,
                        output_base_dir: str = None, ip_translation_range: str = None,
                        jitter_max: float = 0.1) -> dict:
@@ -367,6 +478,33 @@ def merge_augmentation(benign_pcap: str, malicious_pcap: str, project_name: str,
     """
     aug = MergeAugmentation(project_name, output_base_dir)
     results = aug.run(benign_pcap, malicious_pcap, ip_translation_range, jitter_max)
+    aug.print_results(results)
+    return results
+
+
+def attack_and_merge_augmentation(benign_pcap: str, attack_key: str, 
+                                   attack_parameters: Dict[str, Any],
+                                   project_name: str, output_base_dir: str = None,
+                                   ip_translation_range: Optional[str] = None,
+                                   jitter_max: float = 0.1) -> dict:
+    """
+    Convenience function to generate an attack and merge it with a benign PCAP.
+    
+    Args:
+        benign_pcap (str): Path to benign pcap file
+        attack_key (str): Key of the attack to generate
+        attack_parameters (dict): Parameters specific to the attack
+        project_name (str): Name of the project
+        output_base_dir (str): Base directory for output
+        ip_translation_range (str): Optional CIDR range for IP translation
+        jitter_max (float): Maximum jitter in seconds
+    
+    Returns:
+        dict: Results dictionary
+    """
+    aug = AttackAndMergeAugmentation(project_name, output_base_dir)
+    results = aug.run(benign_pcap, attack_key, attack_parameters, 
+                      ip_translation_range, jitter_max)
     aug.print_results(results)
     return results
 
