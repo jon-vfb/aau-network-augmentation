@@ -2,6 +2,7 @@ import curses
 import os
 import sys
 from typing import Optional
+import time
 
 # Check curses compatibility on Windows
 try:
@@ -26,6 +27,7 @@ except AttributeError as e:
 from layout.curses_layout import CursesLayout
 from logic.curses_logic import CursesLogic
 from features.augmentations import InputValidator
+from loading_screen import LoadingScreen
 
 
 class PcapCursesUI:
@@ -1348,9 +1350,64 @@ Ready to generate attack traffic?
 
 def run_curses_ui():
     """Entry point for the curses UI"""
-    try:
+    
+    # Customizable ASCII art and loading text
+    # You can change these variables to customize the loading screen
+    LOADING_ASCII_ART = r"""
+    ╔═══════════════════════════════════════════════════════════╗
+    ║                                                           ║
+    ║   ██████╗  ██████╗ █████╗ ██████╗                        ║
+    ║   ██╔══██╗██╔════╝██╔══██╗██╔══██╗                       ║
+    ║   ██████╔╝██║     ███████║██████╔╝                       ║
+    ║   ██╔═══╝ ██║     ██╔══██║██╔═══╝                        ║
+    ║   ██║     ╚██████╗██║  ██║██║                            ║
+    ║   ╚═╝      ╚═════╝╚═╝  ╚═╝╚═╝                            ║
+    ║                                                           ║
+    ║        Network Augmentation Tool                         ║
+    ║                                                           ║
+    ╚═══════════════════════════════════════════════════════════╝
+    """
+    
+    LOADING_TEXT = "Loading Application"
+    
+    def initialize_ui():
+        """Initialize UI components with a minimum display time for loading screen"""
+        start_time = time.time()
         ui = PcapCursesUI()
-        curses.wrapper(ui.run)
+        
+        # Ensure loading screen shows for at least 3 seconds
+        elapsed = time.time() - start_time
+        if elapsed < 3.0:
+            time.sleep(3.0 - elapsed)
+        
+        return ui
+    
+    try:
+        # Show loading screen during initialization
+        loading_screen = LoadingScreen(ascii_art=LOADING_ASCII_ART, loading_text=LOADING_TEXT)
+        ui = [None]
+        exception = [None]
+        
+        def init_with_loading(stdscr):
+            loading_screen.start(stdscr)
+            
+            try:
+                ui[0] = initialize_ui()
+            except Exception as e:
+                exception[0] = e
+            finally:
+                loading_screen.stop()
+                time.sleep(0.2)  # Brief pause for clean transition
+        
+        # Run loading screen
+        curses.wrapper(init_with_loading)
+        
+        # Check if initialization failed
+        if exception[0] is not None:
+            raise exception[0]
+        
+        # Run the main UI
+        curses.wrapper(ui[0].run)
         
         # After exiting curses mode, check if we need to validate a merged PCAP
         if hasattr(ui, 'merged_pcap_to_validate') and ui.merged_pcap_to_validate:

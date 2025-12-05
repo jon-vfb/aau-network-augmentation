@@ -3,6 +3,9 @@ import sys
 
 
 def main():
+
+    print("App initializing...")
+
     ui_mode = os.getenv("UI_MODE", "curses")
 
     if ui_mode == "curses":
