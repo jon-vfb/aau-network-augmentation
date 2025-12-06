@@ -48,10 +48,10 @@ class LoadingScreen:
                 if self.stdscr is None:
                     break
                     
-                # Calculate dot animation
+                # Calculate dot animation for second text
                 dots = "." * self.dot_count
                 spaces = " " * (self.max_dots - self.dot_count)
-                loading_line = f"{self.loading_text}{dots}{spaces}"
+                loading_line_2 = f"{self.loading_text_2}{dots}{spaces}"
                 
                 # Get screen dimensions
                 height, width = self.stdscr.getmaxyx()
@@ -59,34 +59,88 @@ class LoadingScreen:
                 # Clear and redraw
                 self.stdscr.clear()
                 
-                # Draw ASCII art centered
+                # Draw ASCII art centered (remove extra whitespace per line)
                 ascii_lines = self.ascii_art.strip().split('\n')
-                start_y = max(0, (height - len(ascii_lines) - 4) // 2)
                 
-                for i, line in enumerate(ascii_lines):
-                    y_pos = start_y + i
-                    if y_pos < height - 3:
-                        x_pos = max(0, (width - len(line)) // 2)
-                        try:
-                            self.stdscr.addstr(y_pos, x_pos, line)
-                        except curses.error:
-                            pass  # Ignore if text doesn't fit
+                # Calculate content width based on longest ASCII line
+                max_ascii_width = max(len(line.rstrip()) for line in ascii_lines) if ascii_lines else 0
+                max_text_width = max(len(self.loading_text), len(loading_line_2))
+                content_width = max(max_ascii_width, max_text_width) + 4  # +4 for padding (2 on each side)
+                content_height = len(ascii_lines) + 4  # ASCII + 2 text lines + padding
                 
-                # Draw loading text with dots below ASCII art
-                loading_y = start_y + len(ascii_lines) + 2
-                if loading_y < height - 1:
-                    loading_x = max(0, (width - len(loading_line)) // 2)
+                # Calculate border position
+                border_start_y = max(0, (height - content_height - 2) // 2)
+                border_start_x = max(0, (width - content_width - 2) // 2)
+                
+                # Draw top border
+                if border_start_y < height - 1:
+                    top_border = "┌" + "─" * (content_width) + "┐"
                     try:
-                        self.stdscr.addstr(loading_y, loading_x, loading_line)
+                        self.stdscr.addstr(border_start_y, border_start_x, top_border)
                     except curses.error:
                         pass
                 
-                # Draw secondary loading text
-                loading_y_2 = loading_y + 1
-                if loading_y_2 < height - 1:
-                    loading_x_2 = max(0, (width - len(self.loading_text_2)) // 2)
+                # Draw padding line after top border
+                padding_y = border_start_y + 1
+                if padding_y < height - 2:
                     try:
-                        self.stdscr.addstr(loading_y_2, loading_x_2, self.loading_text_2)
+                        self.stdscr.addstr(padding_y, border_start_x, "│" + " " * content_width + "│")
+                    except curses.error:
+                        pass
+                
+                # Draw ASCII art inside border (centered)
+                start_y = padding_y + 1
+                for i, line in enumerate(ascii_lines):
+                    y_pos = start_y + i
+                    if y_pos < height - 3:
+                        # Strip trailing whitespace from each line
+                        line = line.rstrip()
+                        line_len = len(line)
+                        # Center the line within the content area
+                        padding_left = (content_width - line_len) // 2
+                        centered_line = " " * padding_left + line + " " * (content_width - line_len - padding_left)
+                        
+                        try:
+                            self.stdscr.addstr(y_pos, border_start_x, "│" + centered_line + "│")
+                        except curses.error:
+                            pass
+                
+                # Draw first loading text (static, centered)
+                loading_y = start_y + len(ascii_lines)
+                if loading_y < height - 2:
+                    text_len = len(self.loading_text)
+                    padding_left = (content_width - text_len) // 2
+                    centered_text = " " * padding_left + self.loading_text + " " * (content_width - text_len - padding_left)
+                    try:
+                        self.stdscr.addstr(loading_y, border_start_x, "│" + centered_text + "│")
+                    except curses.error:
+                        pass
+                
+                # Draw secondary loading text with animated dots (centered)
+                loading_y_2 = loading_y + 1
+                if loading_y_2 < height - 2:
+                    text_len_2 = len(loading_line_2)
+                    padding_left_2 = (content_width - text_len_2) // 2
+                    centered_text_2 = " " * padding_left_2 + loading_line_2 + " " * (content_width - text_len_2 - padding_left_2)
+                    try:
+                        self.stdscr.addstr(loading_y_2, border_start_x, "│" + centered_text_2 + "│")
+                    except curses.error:
+                        pass
+                
+                # Draw padding line before bottom border
+                padding_y_2 = loading_y_2 + 1
+                if padding_y_2 < height - 1:
+                    try:
+                        self.stdscr.addstr(padding_y_2, border_start_x, "│" + " " * content_width + "│")
+                    except curses.error:
+                        pass
+                
+                # Draw bottom border
+                bottom_y = padding_y_2 + 1
+                if bottom_y < height - 1:
+                    bottom_border = "└" + "─" * (content_width) + "┘"
+                    try:
+                        self.stdscr.addstr(bottom_y, border_start_x, bottom_border)
                     except curses.error:
                         pass
                 
