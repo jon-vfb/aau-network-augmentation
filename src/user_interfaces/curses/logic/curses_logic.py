@@ -193,14 +193,14 @@ class CursesLogic:
                         'packet_indices': [],
                         'first_seen': getattr(packet, 'time', 0),
                         'last_seen': getattr(packet, 'time', 0),
-                        'bytes_transferred': 0
+                        'bytes_total': 0
                     }
                 
                 flow = flows[flow_key]
                 flow['packet_count'] += 1
                 flow['packet_indices'].append(i)
                 flow['last_seen'] = getattr(packet, 'time', flow['last_seen'])
-                flow['bytes_transferred'] += len(packet)
+                flow['bytes_total'] += len(packet)
                 
             except Exception as e:
                 continue

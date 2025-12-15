@@ -222,7 +222,7 @@ class CursesLayout:
             # Format flow information
             flow_text = f"{flow_index+1:<4} {flow['src_ip']:<18} {flow['dst_ip']:<18} " \
                        f"{flow['src_port']:<8} {flow['protocol']:<8} " \
-                       f"{flow['packet_count']:<6} {flow['bytes_transferred']:<10}"
+                       f"{flow['packet_count']:<6} {flow['bytes_total']:<10}"
             
             # Highlight selected item
             if flow_index == selected_index:
@@ -247,7 +247,7 @@ class CursesLayout:
             f"Destination: {netflow_info['dst_ip']}:{netflow_info['dst_port']}",
             f"Protocol: {netflow_info['protocol']}",
             f"Packet Count: {netflow_info['packet_count']}",
-            f"Bytes Transferred: {netflow_info['bytes_transferred']}",
+            f"Bytes Transferred: {netflow_info['bytes_total']}",
             f"Duration: {netflow_info['last_seen'] - netflow_info['first_seen']:.2f} seconds",
             "",
             "Press 'p' to view packets in this flow"
