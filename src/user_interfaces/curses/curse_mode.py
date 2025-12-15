@@ -806,9 +806,10 @@ Error Messages:
         attack_count = len(attacks)
         
         if key == 27:  # ESC
-            self.mode = "main_menu"
+            self.mode = "augmentation_benign_select"
             self.selected_index = 0
-            self.status_message = "Back to main menu"
+            self.scroll_offset = 0
+            self.status_message = "Back to benign PCAP selection"
         elif key == curses.KEY_DOWN or key == ord('j'):
             if self.selected_index < attack_count - 1:
                 self.selected_index += 1
@@ -849,7 +850,8 @@ Error Messages:
         if key == 27:  # ESC
             self.mode = "augmentation_attack_select"
             self.selected_index = 0
-            self.status_message = "Back to attack selection"
+            self.scroll_offset = 0
+            self.status_message = "Back to attack type selection"
         elif key == curses.KEY_DOWN or key == ord('j'):
             if current_idx < param_count - 1:
                 self.logic.set_attack_parameter_index(current_idx + 1)
@@ -1295,7 +1297,7 @@ Ready to generate attack traffic?
                     self.mode = "augmentation_results"
                     self.status_message = f"Augmentation error: {self.logic.last_error}"
             elif self.menu_selected == 1:  # Cancel
-                self.mode = "augmentation_menu"
+                self.mode = "augmentation_config"
                 self.menu_selected = 0
                 self.status_message = "Augmentation cancelled"
         
@@ -1309,16 +1311,42 @@ Ready to generate attack traffic?
     def handle_augmentation_results_input(self, key) -> bool:
         """Handle input in augmentation results mode"""
         if key in (ord('\n'), ord(' ')):  # Enter or Space
-            # Exit curses mode to validate the merged PCAP
+            # Validate the merged PCAP file
             results = self.logic.get_augmentation_results()
             if results and results.get('success') and results.get('merged_pcap'):
-                # Store the merged PCAP path for validation after exiting curses
-                self.merged_pcap_to_validate = results.get('merged_pcap')
-                return False  # Exit curses mode
-            else:
-                self.mode = "main_menu"
-                self.selected_index = 0
-                self.status_message = "Back to main menu"
+                merged_pcap_path = results.get('merged_pcap')
+                
+                # Run validation
+                try:
+                    import sys
+                    import os
+                    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+                    from validators.basic_validator import (
+                        validate_pcap_magic, validate_pcap_snaplen,
+                        validate_pcap_packet_headers, validate_pcap_timestamps
+                    )
+                    
+                    # Run validations
+                    magic_valid = validate_pcap_magic(merged_pcap_path)
+                    snaplen_valid = validate_pcap_snaplen(merged_pcap_path)
+                    headers_valid = validate_pcap_packet_headers(merged_pcap_path)
+                    timestamps_valid = validate_pcap_timestamps(merged_pcap_path)
+                    
+                    # Update status message with validation results
+                    validation_status = "✓ PCAP Validation Complete: "
+                    if magic_valid and snaplen_valid and headers_valid and timestamps_valid:
+                        validation_status += "All checks passed"
+                    else:
+                        validation_status += "Some checks failed (see details above)"
+                    
+                    self.status_message = validation_status
+                except Exception as e:
+                    self.status_message = f"Validation error: {str(e)}"
+            
+            # Return to main menu
+            self.mode = "main_menu"
+            self.selected_index = 0
+            self.status_message = "Back to main menu"
         
         return True
     
