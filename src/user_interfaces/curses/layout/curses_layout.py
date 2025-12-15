@@ -100,7 +100,7 @@ class CursesLayout:
         """Draw the list of available PCAP files"""
         height, width = self.stdscr.getmaxyx()
         start_y = 2
-        end_y = height - 3
+        end_y = height - 2
         visible_lines = end_y - start_y
         
         # Title
@@ -195,7 +195,7 @@ class CursesLayout:
         start_y = 2
         # Reserve space for header(1) + title(1) + headers(1) + help(1) + status(1) = 5 lines
         content_start_y = start_y + 3  # After title and headers
-        content_end_y = height - 3  # Before help and status bars
+        content_end_y = height - 2  # Before help and status bars
         visible_lines = content_end_y - content_start_y
         
         # Title

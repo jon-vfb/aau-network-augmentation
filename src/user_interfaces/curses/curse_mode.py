@@ -1614,12 +1614,16 @@ Ready to generate attack traffic?
         height, width = self.stdscr.getmaxyx()
         
         # Calculate visible lines based on mode
+        # Must match the actual visible lines used in the draw methods
         if self.mode in ["pcap_list", "augmentation_pcap_select"]:
-            # header(1) + title(1) + help(1) + status(1) = 4 lines reserved
-            visible_lines = height - 5  # Extra line for safety
-        elif self.mode in ["netflow_list", "packet_list"]:
-            # header(1) + title(1) + headers(1) + help(1) + status(1) = 5 lines reserved  
-            visible_lines = height - 6  # Extra line for safety
+            # draw_pcap_list: start_y=2, end_y=height-2, loop runs for (end_y-start_y-2) = height-6 items
+            visible_lines = height - 6
+        elif self.mode in ["netflow_list"]:
+            # draw_netflow_list: content_start_y=5, content_end_y=height-2, loop runs for (height-7) items
+            visible_lines = height - 7
+        elif self.mode in ["packet_list"]:
+            # draw_packet_list: content_start_y=4, content_end_y=height-2, loop runs for (height-6) items
+            visible_lines = height - 6
         elif self.mode == "packet_detail":
             # No scrolling needed in packet detail mode
             return
