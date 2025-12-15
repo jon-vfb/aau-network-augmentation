@@ -55,6 +55,14 @@ class PcapCursesUI:
             'jitter_max': 0.1
         }
         
+        # Augmentation viewing state
+        self.augmentation_folders = []  # List of augmentation folder paths
+        self.current_augmentation_folder = None  # Currently selected augmentation folder
+        self.augmentation_pcaps = []  # List of PCAP files in current folder
+        self.pcap_source_mode = "pcap_list"  # Track whether PCAP came from pcap_list or augmentation_pcap_select
+        self.validation_results = None  # Track validation results to display
+        self.validation_in_progress = False  # Flag to prevent user input during validation
+        
     def init_ui(self, stdscr):
         """Initialize the UI components"""
         self.stdscr = stdscr
@@ -129,6 +137,10 @@ class PcapCursesUI:
             self.draw_augmentation_running_screen()
         elif self.mode == "augmentation_results":
             self.draw_augmentation_results_screen()
+        elif self.mode == "augmentation_folder_list":
+            self.draw_augmentation_folder_list_screen()
+        elif self.mode == "augmentation_pcap_select":
+            self.draw_augmentation_pcap_select_screen()
         
         self.layout.refresh()
     
@@ -136,7 +148,7 @@ class PcapCursesUI:
         """Draw the main menu screen"""
         self.layout.draw_header("PCAP Network Analyzer - Main Menu")
         
-        menu_items = ["Create Attack PCAP", "Merge PCAPs", "View PCAP", "Quit"]
+        menu_items = ["Create Attack PCAP", "Merge PCAPs", "View PCAP", "View Augmentations", "Quit"]
         self.layout.draw_menu(
             menu_items,
             self.selected_index,
@@ -246,13 +258,17 @@ class PcapCursesUI:
             return self.handle_augmentation_running_input(key)
         elif self.mode == "augmentation_results":
             return self.handle_augmentation_results_input(key)
+        elif self.mode == "augmentation_folder_list":
+            return self.handle_augmentation_folder_list_input(key)
+        elif self.mode == "augmentation_pcap_select":
+            return self.handle_augmentation_pcap_select_input(key)
         
         return True
     
     def handle_main_menu_input(self, key) -> bool:
         """Handle input in main menu mode"""
         if key == curses.KEY_DOWN or key == ord('j'):
-            if self.selected_index < 3:  # 4 menu options (0-3)
+            if self.selected_index < 4:  # 5 menu options (0-4)
                 self.selected_index += 1
         elif key == curses.KEY_UP or key == ord('k'):
             if self.selected_index > 0:
@@ -275,7 +291,13 @@ class PcapCursesUI:
                 self.selected_index = 0
                 self.scroll_offset = 0
                 self.status_message = "Select PCAP to view"
-            elif self.selected_index == 3:  # Quit
+            elif self.selected_index == 3:  # View Augmentations
+                self.scan_augmentation_folders()
+                self.mode = "augmentation_folder_list"
+                self.selected_index = 0
+                self.scroll_offset = 0
+                self.status_message = "Select augmentation folder"
+            elif self.selected_index == 4:  # Quit
                 return False
         
         return True
@@ -301,6 +323,7 @@ class PcapCursesUI:
             if pcap_count > 0 and 0 <= self.selected_index < pcap_count:
                 pcap_path = self.logic.available_pcaps[self.selected_index]
                 if self.logic.load_pcap(pcap_path):
+                    self.pcap_source_mode = "pcap_list"
                     self.mode = "pcap_info"
                     self.menu_selected = 0
                     self.status_message = f"Loaded {os.path.basename(pcap_path)}"
@@ -313,7 +336,7 @@ class PcapCursesUI:
     def handle_pcap_info_input(self, key) -> bool:
         """Handle input in PCAP info mode"""
         if key == 27:  # ESC
-            self.mode = "pcap_list"
+            self.mode = self.pcap_source_mode
             self.selected_index = 0
             self.scroll_offset = 0
             self.status_message = "Back to file selection"
@@ -330,7 +353,7 @@ class PcapCursesUI:
                 self.scroll_offset = 0
                 self.status_message = "Viewing netflows"
             elif self.menu_selected == 1:  # Back to PCAP List
-                self.mode = "pcap_list"
+                self.mode = self.pcap_source_mode
                 self.selected_index = 0
                 self.scroll_offset = 0
                 self.status_message = "Back to file selection"
@@ -665,23 +688,45 @@ Please wait...
         
         if results and results.get('success'):
             status = "✓ SUCCESS"
-            result_text = f"""
+            
+            # Check if we have validation results to display
+            if self.validation_results:
+                # Show results with validation
+                result_text = f"""
+Project:                 {results.get('project_name', 'N/A')}
+Status:                  {status}
+
+Output Files:
+  Merged/Attack PCAP:  {os.path.basename(results.get('merged_pcap', results.get('attack_pcap', 'N/A')))}
+
+PCAP Validation Results:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Magic Bytes:         {'✓ PASS' if self.validation_results['magic'] else '✗ FAIL'}
+  Snaplen:             {'✓ PASS' if self.validation_results['snaplen'] else '✗ FAIL'}
+  Packet Headers:      {'✓ PASS' if self.validation_results['headers'] else '✗ FAIL'}
+  Timestamps:          {'✓ PASS' if self.validation_results['timestamps'] else '✗ FAIL'}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Overall:             {'✓ ALL CHECKS PASSED' if all(self.validation_results.values()) else '✗ SOME CHECKS FAILED'}
+
+Press ENTER to return to main menu
+"""
+                self.layout.draw_text_box(result_text, 2, 2)
+            else:
+                # Show results without validation yet - validation in progress
+                result_text = f"""
 Project:                 {results.get('project_name', 'N/A')}
 Status:                  {status}
 
 Output Files:
   Project Directory:    {results.get('project_dir', 'N/A')}
-  Benign CSV:          {os.path.basename(results.get('benign_csv', 'N/A'))}
-  Malicious CSV:       {os.path.basename(results.get('malicious_csv', 'N/A'))}
-  Merged PCAP:         {os.path.basename(results.get('merged_pcap', 'N/A'))}
+  Merged/Attack PCAP:  {os.path.basename(results.get('merged_pcap', results.get('attack_pcap', 'N/A')))}
 
-Merge Statistics:
-  Benign Packets:      {results.get('merge_statistics', {}).get('left_packets', 0)}
-  Malicious Packets:   {results.get('merge_statistics', {}).get('right_packets', 0)}
-  Total Packets:       {results.get('merge_statistics', {}).get('total_expected_packets', 0)}
+Validating PCAP file...
+Please wait...
 
-Press ENTER to exit and validate the merged PCAP file
+Press ENTER to continue
 """
+                self.layout.draw_text_box(result_text, 2, 2)
         else:
             status = "✗ FAILED"
             error_msg = results.get('messages', ['Unknown error']) if results else ['Augmentation failed']
@@ -696,9 +741,9 @@ Error Messages:
                     result_text += f"\n  {msg}"
             
             result_text += "\n\nPress ENTER to return to main menu"
+            self.layout.draw_text_box(result_text, 2, 2)
         
-        self.layout.draw_text_box(result_text, 10, 2)
-        self.layout.draw_help_bar("Enter: Exit & Validate | q: Quit")
+        self.layout.draw_help_bar("Enter: Validate/Continue | q: Quit")
         self.layout.draw_status_bar(self.status_message, self.mode)
     
     # ==================== AUGMENTATION INPUT HANDLERS ====================
@@ -1030,10 +1075,34 @@ Enter new value (or press ESC to keep current):
                 # Run attack generation and merge
                 success = self.logic.run_augmentation_attack_and_merge()
                 if success:
+                    # Validate the PCAP immediately
+                    results = self.logic.get_augmentation_results()
+                    pcap_path = results.get('merged_pcap') or results.get('attack_pcap') or results.get('pcap')
+                    if pcap_path:
+                        self.validation_results = self.run_pcap_validation(pcap_path)
+                        if self.validation_results is None:
+                            # Validation failed to run
+                            self.validation_results = {
+                                'magic': False,
+                                'snaplen': False,
+                                'headers': False,
+                                'timestamps': False
+                            }
+                    else:
+                        # No PCAP path found in results
+                        self.status_message = f"No PCAP file in results. Available keys: {list(results.keys())}"
+                        self.validation_results = {
+                            'magic': False,
+                            'snaplen': False,
+                            'headers': False,
+                            'timestamps': False
+                        }
+                    
                     self.mode = "augmentation_results"
-                    self.status_message = "Attack generation and merge completed"
+                    self.status_message = "Augmentation completed - Validation results displayed"
                 else:
                     self.mode = "augmentation_results"
+                    self.validation_results = None
                     self.status_message = f"Augmentation error: {self.logic.last_error}"
             elif self.menu_selected == 1:  # Cancel & Edit
                 self.mode = "augmentation_attack_config"
@@ -1103,10 +1172,42 @@ Ready to generate attack traffic?
                 # Run attack generation only
                 success = self.logic.run_attack_generation()
                 if success:
+                    # Validate the PCAP immediately
+                    results = self.logic.get_augmentation_results()
+                    
+                    # Debug: Check what keys are in results
+                    if not results:
+                        self.validation_results = {'magic': False, 'snaplen': False, 'headers': False, 'timestamps': False}
+                        self.status_message = "ERROR: No results returned from attack generation"
+                    else:
+                        # For attack generation, the key is 'output_file'
+                        pcap_path = results.get('output_file') or results.get('attack_pcap') or results.get('merged_pcap') or results.get('pcap')
+                        
+                        if pcap_path:
+                            self.validation_results = self.run_pcap_validation(pcap_path)
+                            if self.validation_results is None:
+                                # Validation failed to run
+                                self.validation_results = {
+                                    'magic': False,
+                                    'snaplen': False,
+                                    'headers': False,
+                                    'timestamps': False
+                                }
+                                self.status_message = "Validation failed - check status for details"
+                        else:
+                            # No PCAP path found in results
+                            self.validation_results = {
+                                'magic': False,
+                                'snaplen': False,
+                                'headers': False,
+                                'timestamps': False
+                            }
+                            self.status_message = f"ERROR: No PCAP file path found. Results keys: {list(results.keys()) if results else 'None'}"
+                    
                     self.mode = "augmentation_results"
-                    self.status_message = "Attack generation completed"
                 else:
                     self.mode = "augmentation_results"
+                    self.validation_results = None
                     self.status_message = f"Attack generation error: {self.logic.last_error}"
             elif self.menu_selected == 1:  # Cancel & Edit
                 self.mode = "augmentation_attack_config"
@@ -1291,10 +1392,32 @@ Ready to generate attack traffic?
                 # Run augmentation
                 results = self.logic.run_augmentation_merge()
                 if results:
+                    # Validate the PCAP immediately
+                    pcap_path = results.get('merged_pcap') or results.get('attack_pcap') or results.get('pcap')
+                    if pcap_path:
+                        self.validation_results = self.run_pcap_validation(pcap_path)
+                        if self.validation_results is None:
+                            # Validation failed to run
+                            self.validation_results = {
+                                'magic': False,
+                                'snaplen': False,
+                                'headers': False,
+                                'timestamps': False
+                            }
+                    else:
+                        # No PCAP path found in results
+                        self.validation_results = {
+                            'magic': False,
+                            'snaplen': False,
+                            'headers': False,
+                            'timestamps': False
+                        }
+                    
                     self.mode = "augmentation_results"
-                    self.status_message = "Augmentation completed"
+                    self.status_message = "Augmentation completed - Validation results displayed"
                 else:
                     self.mode = "augmentation_results"
+                    self.validation_results = None
                     self.status_message = f"Augmentation error: {self.logic.last_error}"
             elif self.menu_selected == 1:  # Cancel
                 self.mode = "augmentation_config"
@@ -1310,43 +1433,179 @@ Ready to generate attack traffic?
     
     def handle_augmentation_results_input(self, key) -> bool:
         """Handle input in augmentation results mode"""
+        # Don't allow any input until user understands the validation results
         if key in (ord('\n'), ord(' ')):  # Enter or Space
-            # Validate the merged PCAP file
-            results = self.logic.get_augmentation_results()
-            if results and results.get('success') and results.get('merged_pcap'):
-                merged_pcap_path = results.get('merged_pcap')
-                
-                # Run validation
-                try:
-                    import sys
-                    import os
-                    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
-                    from validators.basic_validator import (
-                        validate_pcap_magic, validate_pcap_snaplen,
-                        validate_pcap_packet_headers, validate_pcap_timestamps
-                    )
-                    
-                    # Run validations
-                    magic_valid = validate_pcap_magic(merged_pcap_path)
-                    snaplen_valid = validate_pcap_snaplen(merged_pcap_path)
-                    headers_valid = validate_pcap_packet_headers(merged_pcap_path)
-                    timestamps_valid = validate_pcap_timestamps(merged_pcap_path)
-                    
-                    # Update status message with validation results
-                    validation_status = "✓ PCAP Validation Complete: "
-                    if magic_valid and snaplen_valid and headers_valid and timestamps_valid:
-                        validation_status += "All checks passed"
-                    else:
-                        validation_status += "Some checks failed (see details above)"
-                    
-                    self.status_message = validation_status
-                except Exception as e:
-                    self.status_message = f"Validation error: {str(e)}"
+            # Only allow moving forward if we have validation results (augmentation was successful)
+            if self.validation_results is not None:
+                # Return to main menu
+                self.mode = "main_menu"
+                self.selected_index = 0
+                self.validation_results = None
+                self.status_message = "Back to main menu"
+            elif self.logic.get_augmentation_results() and not self.logic.get_augmentation_results().get('success'):
+                # If augmentation failed, allow going back
+                self.mode = "main_menu"
+                self.selected_index = 0
+                self.validation_results = None
+                self.status_message = "Back to main menu"
+        
+        return True
+    
+    # ==================== AUGMENTATION VIEWING ====================
+    
+    def run_pcap_validation(self, pcap_path):
+        """Run PCAP validation and return results"""
+        import os
+        
+        # Debug: Log the path we're trying to validate
+        if not pcap_path:
+            self.status_message = "ERROR: No PCAP path provided to validation"
+            return None
+        
+        # Check if file exists first
+        if not os.path.isfile(pcap_path):
+            self.status_message = f"ERROR: PCAP file not found at: {pcap_path}"
+            return None
+        
+        try:
+            import sys
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+            from validators.basic_validator import (
+                validate_pcap_magic, validate_pcap_snaplen,
+                validate_pcap_packet_headers, validate_pcap_timestamps
+            )
             
-            # Return to main menu
+            # Run validations
+            magic_valid = validate_pcap_magic(pcap_path)
+            snaplen_valid = validate_pcap_snaplen(pcap_path)
+            headers_valid = validate_pcap_packet_headers(pcap_path)
+            timestamps_valid = validate_pcap_timestamps(pcap_path)
+            
+            return {
+                'magic': magic_valid,
+                'snaplen': snaplen_valid,
+                'headers': headers_valid,
+                'timestamps': timestamps_valid
+            }
+        except Exception as e:
+            self.status_message = f"Validation error: {str(e)}"
+            return {
+                'magic': False,
+                'snaplen': False,
+                'headers': False,
+                'timestamps': False
+            }
+    
+    def scan_augmentation_folders(self):
+        """Scan the augmentations folder for subdirectories"""
+        import os
+        augmentations_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'augmentations')
+        
+        self.augmentation_folders = []
+        
+        if os.path.isdir(augmentations_path):
+            try:
+                for item in os.listdir(augmentations_path):
+                    item_path = os.path.join(augmentations_path, item)
+                    if os.path.isdir(item_path):
+                        self.augmentation_folders.append(item_path)
+                self.augmentation_folders.sort()
+            except Exception as e:
+                self.status_message = f"Error scanning augmentations: {str(e)}"
+    
+    def scan_augmentation_pcaps(self, folder_path):
+        """Scan a specific augmentation folder for .pcapng files at the first level"""
+        import os
+        self.augmentation_pcaps = []
+        
+        try:
+            for item in os.listdir(folder_path):
+                if item.endswith('.pcapng'):
+                    item_path = os.path.join(folder_path, item)
+                    if os.path.isfile(item_path):
+                        self.augmentation_pcaps.append(item_path)
+            self.augmentation_pcaps.sort()
+        except Exception as e:
+            self.status_message = f"Error scanning augmentation PCAPs: {str(e)}"
+    
+    def draw_augmentation_folder_list_screen(self):
+        """Draw the augmentation folder selection screen"""
+        self.layout.draw_header("View Augmentations - Select Folder")
+        
+        folder_names = [os.path.basename(f) for f in self.augmentation_folders]
+        self.layout.draw_menu(
+            folder_names,
+            self.selected_index,
+            title="Available Augmentation Folders"
+        )
+        
+        self.layout.draw_help_bar("↑↓: Navigate | Enter: Select | ESC: Back | q: Quit")
+        self.layout.draw_status_bar(self.status_message, self.mode)
+    
+    def draw_augmentation_pcap_select_screen(self):
+        """Draw the PCAP file selection screen for augmentation folder"""
+        self.layout.draw_header(f"View Augmentations - Select PCAP: {os.path.basename(self.current_augmentation_folder)}")
+        self.layout.draw_pcap_list(self.augmentation_pcaps, self.selected_index, self.scroll_offset)
+        self.layout.draw_help_bar("↑↓: Navigate | Enter: Select | ESC: Back | q: Quit")
+        self.layout.draw_status_bar(self.status_message, self.mode)
+    
+    def handle_augmentation_folder_list_input(self, key) -> bool:
+        """Handle input in augmentation folder list mode"""
+        folder_count = len(self.augmentation_folders)
+        
+        if key == 27:  # ESC
             self.mode = "main_menu"
             self.selected_index = 0
+            self.scroll_offset = 0
             self.status_message = "Back to main menu"
+        elif key == curses.KEY_DOWN or key == ord('j'):
+            if self.selected_index < folder_count - 1:
+                self.selected_index += 1
+                self.update_scroll()
+        elif key == curses.KEY_UP or key == ord('k'):
+            if self.selected_index > 0:
+                self.selected_index -= 1
+                self.update_scroll()
+        elif key in (ord('\n'), ord(' ')):  # Enter or Space
+            if folder_count > 0 and 0 <= self.selected_index < folder_count:
+                folder_path = self.augmentation_folders[self.selected_index]
+                self.current_augmentation_folder = folder_path
+                self.scan_augmentation_pcaps(folder_path)
+                self.mode = "augmentation_pcap_select"
+                self.selected_index = 0
+                self.scroll_offset = 0
+                self.status_message = f"Select PCAP from {os.path.basename(folder_path)}"
+        
+        return True
+    
+    def handle_augmentation_pcap_select_input(self, key) -> bool:
+        """Handle input in augmentation PCAP selection mode"""
+        pcap_count = len(self.augmentation_pcaps)
+        
+        if key == 27:  # ESC - go back to folder list
+            self.mode = "augmentation_folder_list"
+            self.selected_index = 0
+            self.scroll_offset = 0
+            self.status_message = "Back to folder selection"
+        elif key == curses.KEY_DOWN or key == ord('j'):
+            if self.selected_index < pcap_count - 1:
+                self.selected_index += 1
+                self.update_scroll()
+        elif key == curses.KEY_UP or key == ord('k'):
+            if self.selected_index > 0:
+                self.selected_index -= 1
+                self.update_scroll()
+        elif key in (ord('\n'), ord(' ')):  # Enter or Space
+            if pcap_count > 0 and 0 <= self.selected_index < pcap_count:
+                pcap_path = self.augmentation_pcaps[self.selected_index]
+                if self.logic.load_pcap(pcap_path):
+                    self.pcap_source_mode = "augmentation_pcap_select"
+                    self.mode = "pcap_info"
+                    self.menu_selected = 0
+                    self.status_message = f"Loaded {os.path.basename(pcap_path)}"
+                else:
+                    error_msg = getattr(self.logic, 'last_error', 'Failed to load PCAP file')
+                    self.status_message = error_msg
         
         return True
     
@@ -1355,7 +1614,7 @@ Ready to generate attack traffic?
         height, width = self.stdscr.getmaxyx()
         
         # Calculate visible lines based on mode
-        if self.mode == "pcap_list":
+        if self.mode in ["pcap_list", "augmentation_pcap_select"]:
             # header(1) + title(1) + help(1) + status(1) = 4 lines reserved
             visible_lines = height - 5  # Extra line for safety
         elif self.mode in ["netflow_list", "packet_list"]:
