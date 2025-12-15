@@ -13,25 +13,29 @@ def test_ip_translation():
     """Test IP translation with two sample PCAP files."""
     
     # Using actual sample files from the project
-    benign_pcap = "samples/ping_of_death_corrected.pcap"
-    malicious_pcap = "samples/png_final_attack.pcap"
+    benign_pcap = "samples/benign/ping_of_death_corrected.pcap"
+    malicious_pcap = "samples/malicious/png_final_attack.pcap"
     
     # Check if files exist
     if not os.path.exists(benign_pcap):
         print(f"❌ Benign PCAP not found: {benign_pcap}")
-        print("\nAvailable PCAP files in samples/:")
-        for f in sorted(os.listdir("samples")):
-            if f.endswith(".pcap") or f.endswith(".pcapng"):
-                print(f"  - {f}")
+        print("\nAvailable PCAP files in samples/benign:")
+        benign_dir = os.path.join("samples", "benign")
+        if os.path.exists(benign_dir):
+            for f in sorted(os.listdir(benign_dir)):
+                if f.endswith(".pcap") or f.endswith(".pcapng"):
+                    print(f"  - {f}")
         print("\nUsage: Modify the paths in this script to use actual files from above")
         return
     
     if not os.path.exists(malicious_pcap):
         print(f"❌ Malicious PCAP not found: {malicious_pcap}")
-        print("\nAvailable PCAP files in samples/:")
-        for f in sorted(os.listdir("samples")):
-            if f.endswith(".pcap") or f.endswith(".pcapng"):
-                print(f"  - {f}")
+        print("\nAvailable PCAP files in samples/malicious:")
+        malicious_dir = os.path.join("samples", "malicious")
+        if os.path.exists(malicious_dir):
+            for f in sorted(os.listdir(malicious_dir)):
+                if f.endswith(".pcap") or f.endswith(".pcapng"):
+                    print(f"  - {f}")
         print("\nUsage: Modify the paths in this script to use actual files from above")
         return
     

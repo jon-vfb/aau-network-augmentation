@@ -108,7 +108,7 @@ class CursesLayout:
         self.stdscr.addstr(start_y, 2, title, curses.color_pair(1) | curses.A_BOLD)
         
         if not pcap_files:
-            self.stdscr.addstr(start_y + 2, 4, "No PCAP files found in samples directory", curses.color_pair(3))
+            self.stdscr.addstr(start_y + 2, 4, "No PCAP files found in samples/malicious or samples/benign", curses.color_pair(3))
             return
         
         # File entries

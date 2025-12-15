@@ -76,7 +76,7 @@ class PcapCursesUI:
         # Scan for PCAP files
         pcap_files = self.logic.scan_for_pcaps()
         if not pcap_files:
-            self.status_message = "No PCAP files found in samples directory"
+            self.status_message = "No PCAP files found in samples/malicious or samples/benign"
         else:
             self.status_message = f"Found {len(pcap_files)} PCAP files"
     
@@ -477,8 +477,8 @@ class PcapCursesUI:
     
     def draw_augmentation_benign_select_screen(self):
         """Draw the benign PCAP selection screen"""
-        # Refresh the pcap list to pick up any new files
-        self.logic.scan_for_pcaps()
+        # Refresh the pcap list to pick up any new files - benign only
+        self.logic.scan_for_pcaps(folder_type='benign')
         self.layout.draw_header("Augmentation - Select Benign PCAP")
         self.layout.draw_pcap_list(self.logic.available_pcaps, self.selected_index, self.scroll_offset)
         self.layout.draw_help_bar("↑↓: Navigate | Enter: Select | ESC: Cancel | q: Quit")
@@ -486,8 +486,8 @@ class PcapCursesUI:
     
     def draw_augmentation_malicious_select_screen(self):
         """Draw the malicious PCAP selection screen"""
-        # Refresh the pcap list to pick up any new files
-        self.logic.scan_for_pcaps()
+        # Refresh the pcap list to pick up any new files - malicious only
+        self.logic.scan_for_pcaps(folder_type='malicious')
         self.layout.draw_header("Augmentation - Select Malicious PCAP")
         self.layout.draw_pcap_list(self.logic.available_pcaps, self.selected_index, self.scroll_offset)
         self.layout.draw_help_bar("↑↓: Navigate | Enter: Select | ESC: Cancel | q: Quit")
@@ -1134,7 +1134,7 @@ Attack Parameters:
         
         confirm_text += f"""
 
-Output: samples/{state.get('project_name', 'unknown')}_attack.pcap
+Output: samples/malicious/{state.get('project_name', 'unknown')}_attack.pcap
 
 Ready to generate attack traffic?
 """
