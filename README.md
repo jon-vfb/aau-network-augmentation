@@ -113,9 +113,15 @@ We welcome contributions! To add a new attack:
 3. Test thoroughly
 4. Submit a pull request
 
-## License
+## Creators
 
-[Add your license here]
+- Khadejha Amer Al-Body
+- Davide Benedetti
+- Nana Thostrup Davidsen
+- Caroline Helene Erslev Due
+- Maja Steenberg
+- Jon Ander Vargas
+- Dominik Volic
 
 ## Support
 
