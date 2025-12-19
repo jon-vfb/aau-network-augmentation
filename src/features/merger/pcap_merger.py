@@ -236,8 +236,21 @@ class PcapMerger:
         Returns:
             bool: Success status
         """
+        # Log to file for debugging
+        debug_log_path = output_path.replace('.pcapng', '_debug.log').replace('.pcap', '_debug.log')
+        debug_log = open(debug_log_path, 'w')
+        
+        def log_debug(msg):
+            print(msg)
+            debug_log.write(msg + '\n')
+            debug_log.flush()
+        
+        log_debug(f"\n[MERGE DEBUG] Starting merge() - IP translation report initially has {len(self.ip_translation_report)} entries")
+        log_debug(f"[MERGE DEBUG] IP translation range: {self.ip_translation_range}")
+        
         if not self.left_parser or not self.right_parser:
-            print("Error: PCAP files not loaded")
+            log_debug("Error: PCAP files not loaded")
+            debug_log.close()
             return False
             
         try:
@@ -245,8 +258,11 @@ class PcapMerger:
             left_packets = self.left_parser.get_packets()
             right_packets = self.right_parser.get_packets()
             
+            log_debug(f"[MERGE DEBUG] Loaded {len(left_packets)} left packets, {len(right_packets)} right packets")
+            
             if not left_packets or not right_packets:
-                print("Error: No packets found in one or both PCAP files")
+                log_debug("Error: No packets found in one or both PCAP files")
+                debug_log.close()
                 return False
             
             # Calculate time ranges for both captures
@@ -272,6 +288,48 @@ class PcapMerger:
             
             # Process right (malicious) packets - map them into the benign timeline
             print(f"Mapping {len(right_packets)} malicious packets into benign timeline")
+            print(f"IP translation range: {self.ip_translation_range if self.ip_translation_range else 'DISABLED'}")
+            
+            # Debug: Check what IPs are in the malicious PCAP
+            malicious_ips = set()
+            packet_layers_summary = {}
+            
+            for pkt in right_packets:
+                # Log what layers are present
+                try:
+                    layer_names = ','.join([str(type(layer).__name__) for layer in pkt])
+                    if layer_names not in packet_layers_summary:
+                        packet_layers_summary[layer_names] = 0
+                    packet_layers_summary[layer_names] += 1
+                except:
+                    layer_names = "Unknown"
+                
+                if pkt.haslayer(IP):
+                    try:
+                        malicious_ips.add(pkt[IP].src)
+                        malicious_ips.add(pkt[IP].dst)
+                    except:
+                        pass
+            
+            log_debug(f"Found {len(malicious_ips)} unique IPs in malicious traffic: {sorted(malicious_ips)}")
+            log_debug(f"Packet layer breakdown in malicious PCAP:")
+            for layers, count in sorted(packet_layers_summary.items(), key=lambda x: x[1], reverse=True):
+                log_debug(f"  {count} packets with layers: {layers}")
+            
+            if len(malicious_ips) == 0:
+                log_debug("WARNING: No IP packets found in malicious PCAP! Report will be empty.")
+            
+            # Pre-populate IP translation report with all unique IPs from malicious traffic
+            # This ensures the report tracks ALL malicious IPs, even if they're not translated
+            for ip in malicious_ips:
+                if not any(entry['original_ip'] == ip for entry in self.ip_translation_report):
+                    # Placeholder - will be overwritten if actual translation happens
+                    self.ip_translation_report.append({
+                        'original_ip': ip,
+                        'translated_ip': ip  # Default to same IP
+                    })
+            
+            log_debug(f"After pre-population: IP translation report has {len(self.ip_translation_report)} entries")
             
             for idx, pkt in enumerate(right_packets):
                 # Create a copy of the packet for modification
@@ -363,20 +421,29 @@ class PcapMerger:
                     print(f"Generated merged labels with {len(output_labels)} records")
             
             # Generate IP translation report (always done, even if no translations occurred)
+            log_debug(f"[MERGE DEBUG] Before generating report - IP translation report has {len(self.ip_translation_report)} entries")
+            for entry in self.ip_translation_report[:5]:  # Show first 5
+                log_debug(f"  {entry}")
+            
             output_dir = os.path.dirname(output_path)
             output_base_name = os.path.splitext(os.path.basename(output_path))[0]
             report_path = self._generate_ip_translation_report(output_dir, output_base_name)
             if report_path:
-                print(f"IP translation report saved: {report_path}")
+                log_debug(f"IP translation report saved: {report_path}")
             elif self.ip_translation_range:
-                print(f"Note: No IP translations were needed (all IPs already in use or no conflicts)")
+                log_debug(f"Note: No IP translations were needed (all IPs already in use or no conflicts)")
             else:
-                print(f"Note: IP translation disabled (no translation range specified)")
+                log_debug(f"Note: IP translation disabled (no translation range specified)")
             
+            log_debug(f"\n[MERGE DEBUG] Merge complete - debug log saved to {debug_log_path}")
+            debug_log.close()
             return True
             
         except Exception as e:
-            print(f"Error during merge: {e}")
+            log_debug(f"Error during merge: {e}")
+            import traceback
+            log_debug(traceback.format_exc())
+            debug_log.close()
             return False
             
     def _collect_used_ips(self):
@@ -397,17 +464,28 @@ class PcapMerger:
     
     def _track_ip_translation(self, original_ip: str, translated_ip: str):
         """
-        Track an IP translation in the report. Avoids duplicates.
+        Track an IP translation in the report. Updates existing entries if they already exist.
         
         Args:
             original_ip (str): Original IP from malicious traffic
             translated_ip (str): IP it was translated to (or same IP if no translation)
         """
-        if not any(entry['original_ip'] == original_ip for entry in self.ip_translation_report):
-            self.ip_translation_report.append({
-                'original_ip': original_ip,
-                'translated_ip': translated_ip
-            })
+        # Check if this original IP already exists in the report
+        for entry in self.ip_translation_report:
+            if entry['original_ip'] == original_ip:
+                # Update the translation (in case it was previously set to same IP)
+                entry['translated_ip'] = translated_ip
+                if translated_ip != original_ip:
+                    print(f"  Updated IP translation: {original_ip} → {translated_ip}")
+                return
+        
+        # If not found, add new entry
+        self.ip_translation_report.append({
+            'original_ip': original_ip,
+            'translated_ip': translated_ip
+        })
+        if translated_ip != original_ip:
+            print(f"  Tracked IP translation: {original_ip} → {translated_ip}")
                 
     def _get_next_available_ip(self, original_ip: str) -> Optional[str]:
         """
@@ -433,8 +511,10 @@ class PcapMerger:
                 self.used_ips.add(ip_str)
                 # Track this translation for the report
                 self._track_ip_translation(original_ip, ip_str)
+                print(f"  Translated {original_ip} → {ip_str}")
                 return ip_str
-                
+        
+        print(f"  ✗ No available IPs in range {self.ip_translation_range} for {original_ip}")
         return None
         
     def _apply_jitter(self, delta: float) -> float:
@@ -537,8 +617,9 @@ class PcapMerger:
                 protocol = str(ip_layer.proto)
                 src_port = dst_port = 0
                 
-            # Create unidirectional flow key
-            flow_key = f"{ip_layer.src}:{src_port}->{ip_layer.dst}:{dst_port}-{protocol}"
+            # Create unidirectional flow key (tuple format - matches Cisco NetFlow standard)
+            # A flow from A->B is different from B->A
+            flow_key = (ip_layer.src, src_port, ip_layer.dst, dst_port, protocol)
             
             if flow_key not in flows:
                 flows[flow_key] = {
@@ -569,15 +650,27 @@ class PcapMerger:
             Optional[str]: Path to the generated report file, or None if there's an error
         """
         try:
+            print(f"\n[REPORT DEBUG] _generate_ip_translation_report called")
+            print(f"[REPORT DEBUG] IP translation report has {len(self.ip_translation_report)} entries:")
+            for entry in self.ip_translation_report:
+                print(f"  {entry['original_ip']} → {entry['translated_ip']}")
+            
             # Create report with structured format - always include headers
             report_data = self.ip_translation_report if self.ip_translation_report else []
             report_df = pd.DataFrame(report_data, columns=['original_ip', 'translated_ip'])
             report_path = os.path.join(output_dir, f"{base_name}_ip_translation_report.csv")
             report_df.to_csv(report_path, index=False)
-            print(f"IP Translation Report generated: {report_path} ({len(report_data)} translations)")
+            
+            if len(report_data) > 0:
+                print(f"IP Translation Report generated: {report_path} ({len(report_data)} IPs tracked)")
+            else:
+                print(f"IP Translation Report generated: {report_path} (EMPTY - no IPs found in malicious traffic)")
+            
             return report_path
         except Exception as e:
             print(f"Error generating IP translation report: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def merge_pcaps(self, left_pcap: str, right_pcap: str, output_file: str, 

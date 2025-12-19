@@ -100,7 +100,7 @@ class CursesLayout:
         """Draw the list of available PCAP files"""
         height, width = self.stdscr.getmaxyx()
         start_y = 2
-        end_y = height - 3
+        end_y = height - 2
         visible_lines = end_y - start_y
         
         # Title
@@ -108,7 +108,7 @@ class CursesLayout:
         self.stdscr.addstr(start_y, 2, title, curses.color_pair(1) | curses.A_BOLD)
         
         if not pcap_files:
-            self.stdscr.addstr(start_y + 2, 4, "No PCAP files found in samples directory", curses.color_pair(3))
+            self.stdscr.addstr(start_y + 2, 4, "No PCAP files found in samples/malicious or samples/benign", curses.color_pair(3))
             return
         
         # File entries
@@ -195,7 +195,7 @@ class CursesLayout:
         start_y = 2
         # Reserve space for header(1) + title(1) + headers(1) + help(1) + status(1) = 5 lines
         content_start_y = start_y + 3  # After title and headers
-        content_end_y = height - 3  # Before help and status bars
+        content_end_y = height - 2  # Before help and status bars
         visible_lines = content_end_y - content_start_y
         
         # Title
@@ -222,7 +222,7 @@ class CursesLayout:
             # Format flow information
             flow_text = f"{flow_index+1:<4} {flow['src_ip']:<18} {flow['dst_ip']:<18} " \
                        f"{flow['src_port']:<8} {flow['protocol']:<8} " \
-                       f"{flow['packet_count']:<6} {flow['bytes_transferred']:<10}"
+                       f"{flow['packet_count']:<6} {flow['bytes_total']:<10}"
             
             # Highlight selected item
             if flow_index == selected_index:
@@ -247,7 +247,7 @@ class CursesLayout:
             f"Destination: {netflow_info['dst_ip']}:{netflow_info['dst_port']}",
             f"Protocol: {netflow_info['protocol']}",
             f"Packet Count: {netflow_info['packet_count']}",
-            f"Bytes Transferred: {netflow_info['bytes_transferred']}",
+            f"Bytes Transferred: {netflow_info['bytes_total']}",
             f"Duration: {netflow_info['last_seen'] - netflow_info['first_seen']:.2f} seconds",
             "",
             "Press 'p' to view packets in this flow"

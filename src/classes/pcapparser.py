@@ -865,33 +865,38 @@ class pcapparser:
         
         from ipaddress import ip_address, ip_network, IPv4Address
         
-        ip_set = set()
+        ip_list = []
         
-        # Collect all unique IPs
+        # Collect all unique IPs (both source and destination)
         for pkt in self.packets:
             if pkt.haslayer(IP):
                 try:
-                    src = ip_address(pkt[IP].src)
-                    dst = ip_address(pkt[IP].dst)
+                    src = str(pkt[IP].src)
+                    dst = str(pkt[IP].dst)
+                    src_ip = ip_address(src)
+                    dst_ip = ip_address(dst)
                     
-                    # Only consider IPv4 addresses in private ranges or non-loopback
-                    if isinstance(src, IPv4Address) and not src.is_loopback:
-                        ip_set.add(str(src))
-                    if isinstance(dst, IPv4Address) and not dst.is_loopback:
-                        ip_set.add(str(dst))
+                    # Only consider IPv4 addresses that are not loopback
+                    if isinstance(src_ip, IPv4Address) and not src_ip.is_loopback:
+                        ip_list.append(src)
+                    if isinstance(dst_ip, IPv4Address) and not dst_ip.is_loopback:
+                        ip_list.append(dst)
                 except:
                     continue
         
-        if not ip_set:
+        if not ip_list:
             return None
         
-        # Find the smallest network that contains most IPs
-        # Try common subnet sizes from /24 to /16
+        # Remove duplicates and sort for processing
+        ip_set = sorted(set(ip_list))
+        
+        # Try to find the best network that covers the most IPs
+        # Start with smaller subnets and work our way up
         best_network = None
         best_coverage = 0
         
-        for ip_str in ip_set:
-            for prefix_len in [24, 23, 22, 21, 20, 19, 18, 17, 16]:
+        for prefix_len in range(24, 15, -1):  # /24 down to /16
+            for ip_str in ip_set:
                 try:
                     # Create network from this IP with the prefix length
                     test_network = ip_network(f"{ip_str}/{prefix_len}", strict=False)
@@ -899,13 +904,21 @@ class pcapparser:
                     # Count how many IPs from our set fall in this network
                     coverage = sum(1 for ip in ip_set if ip_address(ip) in test_network)
                     
-                    # Prefer smaller networks with good coverage (at least 50% of IPs)
-                    coverage_ratio = coverage / len(ip_set)
-                    if coverage_ratio >= 0.5 and coverage > best_coverage:
+                    # Keep track of the network with best coverage
+                    if coverage > best_coverage:
                         best_network = test_network
                         best_coverage = coverage
-                        break  # Found good network for this IP, try next
                 except:
                     continue
         
-        return str(best_network) if best_network else None
+        # If we found a network covering at least one IP, return it
+        # Otherwise fallback to just creating a /24 from the first IP
+        if best_network:
+            return str(best_network)
+        
+        # Fallback: if no good network found, create /24 from first IP
+        try:
+            fallback_network = ip_network(f"{ip_set[0]}/24", strict=False)
+            return str(fallback_network)
+        except:
+            return None

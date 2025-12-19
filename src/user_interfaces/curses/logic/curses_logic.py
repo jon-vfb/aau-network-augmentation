@@ -33,16 +33,34 @@ class CursesLogic:
         # Attack augmentation state
         self.attack_config_state: Dict[str, Any] = {}
         
-    def scan_for_pcaps(self, samples_dir: str = None) -> List[str]:
-        """Scan for available PCAP files"""
+    def scan_for_pcaps(self, samples_dir: str = None, folder_type: str = None) -> List[str]:
+        """
+        Scan for available PCAP files in samples/malicious and samples/benign
+        
+        Args:
+            samples_dir: Optional custom samples directory path
+            folder_type: Optional filter - 'malicious', 'benign', or None (both)
+        """
         if samples_dir is None:
             samples_dir = os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'samples')
         
         pcap_files = []
-        if os.path.exists(samples_dir):
-            for file in os.listdir(samples_dir):
-                if file.endswith(('.pcap', '.pcapng')):
-                    pcap_files.append(os.path.join(samples_dir, file))
+        
+        # Scan malicious folder (unless filtered to benign only)
+        if folder_type != 'benign':
+            malicious_dir = os.path.join(samples_dir, 'malicious')
+            if os.path.exists(malicious_dir):
+                for file in os.listdir(malicious_dir):
+                    if file.endswith(('.pcap', '.pcapng')):
+                        pcap_files.append(os.path.join(malicious_dir, file))
+        
+        # Scan benign folder (unless filtered to malicious only)
+        if folder_type != 'malicious':
+            benign_dir = os.path.join(samples_dir, 'benign')
+            if os.path.exists(benign_dir):
+                for file in os.listdir(benign_dir):
+                    if file.endswith(('.pcap', '.pcapng')):
+                        pcap_files.append(os.path.join(benign_dir, file))
         
         self.available_pcaps = pcap_files
         return pcap_files
@@ -193,14 +211,14 @@ class CursesLogic:
                         'packet_indices': [],
                         'first_seen': getattr(packet, 'time', 0),
                         'last_seen': getattr(packet, 'time', 0),
-                        'bytes_transferred': 0
+                        'bytes_total': 0
                     }
                 
                 flow = flows[flow_key]
                 flow['packet_count'] += 1
                 flow['packet_indices'].append(i)
                 flow['last_seen'] = getattr(packet, 'time', flow['last_seen'])
-                flow['bytes_transferred'] += len(packet)
+                flow['bytes_total'] += len(packet)
                 
             except Exception as e:
                 continue
@@ -578,8 +596,8 @@ class CursesLogic:
                 else:
                     attack_params[param_name] = str(param_value)
             
-            # Setup output directory - save to samples folder
-            output_dir = os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'samples')
+            # Setup output directory - save to samples/malicious folder
+            output_dir = os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'samples', 'malicious')
             os.makedirs(output_dir, exist_ok=True)
             
             # Generate output filename
